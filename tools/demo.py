@@ -1,6 +1,8 @@
 import argparse
 import glob
 from pathlib import Path
+import cv2
+import tqdm
 
 import mayavi.mlab as mlab
 import numpy as np
@@ -68,6 +70,43 @@ def parse_config():
 
     return args, cfg
 
+
+def lidar_cam_demo(args, logger):
+    lidar_path = Path(args.data_path)
+    dets_output_path = lidar_path.parent / 'detections'
+    dets_output_path.mkdir(exist_ok=True)
+
+    logger.info('Creating demo video from detection images...')
+    lidar_image_list = [str(det_path.absolute()) for det_path in dets_output_path.glob("*.png")]
+    lidar_image_list.sort()
+
+    image_path = lidar_path.parent / 'image_2'
+
+    if image_path.exists():
+        rgb_image_list = [str(img_path.absolute()) for img_path in image_path.glob("*.png")]
+        rgb_image_list.sort()
+
+        # assert len(lidar_image_list) == len(rgb_image_list)
+
+        video_writer = cv2.VideoWriter(str(lidar_path.parent / 'demo.avi'), cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),
+                                       5, (1280, 720 * 2))
+
+        for lidar_img_path, rgb_img_path in tqdm.tqdm(zip(lidar_image_list, rgb_image_list)):
+            lidar_img = cv2.imread(lidar_img_path)
+            rgb_img = cv2.imread(rgb_img_path)
+            rgb_img = cv2.resize(rgb_img, (1280, 720), interpolation=cv2.INTER_AREA)
+            img_concat = cv2.vconcat([rgb_img, lidar_img])
+            video_writer.write(img_concat)
+
+    else:
+        video_writer = cv2.VideoWriter(str(lidar_path.parent / 'demo.avi'), cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'),
+                                       5, (1280, 720))
+
+        for lidar_img_path in tqdm.tqdm(lidar_image_list):
+            lidar_img = cv2.imread(lidar_img_path)
+            video_writer.write(lidar_img)
+
+    video_writer.release()
 
 def main():
     args, cfg = parse_config()
