@@ -64,6 +64,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_labels = []
                 max_box_num = batch_dict['gt_boxes'].shape[1]
                 max_pseudo_box_num = 0
+                num_valid_sem_thresh = 0    # number of samples passing the semantic threshold
                 for ind in unlabeled_mask:
                     pseudo_score = pred_dicts[ind]['pred_scores']
                     pseudo_box = pred_dicts[ind]['pred_boxes']
@@ -80,6 +81,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                     valid_inds = pseudo_score > conf_thresh.squeeze()
 
+                    num_valid_sem_thresh += torch.sum((pseudo_sem_score > self.sem_thresh[0]).int())
                     valid_inds = valid_inds * (pseudo_sem_score > self.sem_thresh[0])
 
                     pseudo_sem_score = pseudo_sem_score[valid_inds]
@@ -231,6 +233,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
+
+            tb_dict_['num_valid_sem_thresh'] = num_valid_sem_thresh
 
             ret_dict = {
                 'loss': loss
