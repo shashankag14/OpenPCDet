@@ -3,8 +3,11 @@ import os
 
 import torch
 import torch.nn.functional as F
+from statistics import mean
+
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
+from pcdet.utils.cal_quality_utils import QualityMetric
 
 from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
@@ -42,6 +45,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
+        self.metrics = QualityMetric()
+
     def forward(self, batch_dict):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
@@ -72,7 +77,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_sem_scores = []
                 max_pseudo_box_num = 0
                 for ind in unlabeled_inds:
-                    pseudo_score = pred_dicts[ind]['pred_scores']
+                    pseudo_score = pred_dicts[ind]['pred_scores'] 
                     pseudo_box = pred_dicts[ind]['pred_boxes']
                     pseudo_label = pred_dicts[ind]['pred_labels']
                     pseudo_sem_score = pred_dicts[ind]['pred_sem_scores']
@@ -158,7 +163,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         ori_unlabeled_boxes[i, :, 0:7])
                     cls_pseudo = batch_dict['gt_boxes'][ind, ...][:, 7]
                     nonzero_inds = torch.nonzero(cls_pseudo).squeeze(1).long()
-                    cls_pseudo = cls_pseudo[nonzero_inds]
+                    cls_pseudo = cls_pseudo[nonzero_inds] 
                     if len(nonzero_inds) > 0:
                         iou_max, asgn = anchor_by_gt_overlap[nonzero_inds, :].max(dim=1)
                         pseudo_ious.append(iou_max.mean().unsqueeze(dim=0))
@@ -166,7 +171,41 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_accs.append(acc.unsqueeze(0))
                         fg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_FG_THRESH']
                         bg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_BG_THRESH']  # bg_thresh includes both easy and hard bgs
-                        fg = (iou_max > fg_thresh).float().sum(dim=0, keepdim=True) / len(nonzero_inds)
+                        fg = (iou_max > fg_thresh).float().sum(dim=0, keepdim=True) / len(nonzero_inds) 
+                        
+                        # Store tp, fp, fn per batch
+                        tp_mask = iou_max >= fg_thresh
+                        tp = tp_mask.sum().item()
+                        fp = iou_max.shape[0] - tp
+                        # gt boxes that missed by tp boxes are fn boxes
+                        # fn (gt boxes are fg but pseduo boxes are bg) = total gt boxes - tp
+                        fn = ori_unlabeled_boxes.shape[1] - tp
+                        self.metrics.tp.append(tp)
+                        self.metrics.fp.append(fp)
+                        self.metrics.fn.append(fn)
+
+                        # get tp boxes and their corresponding gt boxes
+                        tp_pseudo_boxes = batch_dict['gt_boxes'][ind][nonzero_inds[tp_mask]]  
+                        tp_gt_boxes = ori_unlabeled_boxes[i][asgn, :][tp_mask]               
+                        
+                        if tp > 0:
+                            # Used for computing "Assignment error" later (based on Combating Noise paper)
+                            trans_err, orient_err, scale_err = self.metrics.cal_diff(tp_pseudo_boxes, tp_gt_boxes, tp)
+                            self.metrics.assignment_error.append(trans_err + orient_err + scale_err)
+
+                            self.metrics.precision.append(tp / (tp + fp))
+                            self.metrics.recall.append(tp / (tp + fn))
+
+                        else :
+                            self.metrics.assignment_error.append(float('nan'))
+
+                            self.metrics.precision.append(float('nan'))
+                            self.metrics.recall.append(float('nan'))
+
+                        self.metrics.missed_gt_error.append(fn)
+
+                        self.metrics.classification_error.append((1 - acc).item())
+
 
                         sem_score_fg = (pseudo_sem_scores[i][nonzero_inds] * (iou_max > fg_thresh).float()).sum(dim=0, keepdim=True) \
                                        / torch.clamp((iou_max > fg_thresh).float().sum(dim=0, keepdim=True), min=1.0)
@@ -197,7 +236,14 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_ious.append(nan)
                         pseudo_accs.append(nan)
                         pseudo_fgs.append(nan)
+                        
+                        self.metrics.tp.append(float('nan'))
+                        self.metrics.fp.append(float('nan'))
+                        self.metrics.fn.append(ori_unlabeled_boxes.shape[1])
 
+                        self.metrics.assignment_error.append(float('nan'))
+                        self.metrics.missed_gt_error.append(float('nan'))
+                        self.metrics.classification_error.append(float('nan'))  
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
@@ -208,7 +254,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     # batch_dict_std = copy.deepcopy(batch_dict) # doesn't work
                     batch_dict_std = {}
                     batch_dict_std['rois'] = batch_dict['rois'].data.clone()
-                    batch_dict_std['roi_scores'] = batch_dict['roi_scores'].data.clone()
+                    batch_dict_std['roi_scores'] = batch_dict['roi_scores'].data.clone() 
                     batch_dict_std['roi_labels'] = batch_dict['roi_labels'].data.clone()
                     batch_dict_std['has_class_labels'] = batch_dict['has_class_labels']
                     batch_dict_std['batch_size'] = batch_dict['batch_size']
@@ -235,7 +281,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     for pred_dict in pred_dicts_std:
                         all_samples.append(pred_dict['pred_scores'].unsqueeze(dim=0))
                     pred_scores_teacher = torch.cat(all_samples, dim=0)
-                    self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'] = pred_scores_teacher.data.clone()
+                    self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'] = pred_scores_teacher.data.clone() 
                     self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_mask'] = unlabeled_inds
 
             disp_dict = {}
@@ -281,6 +327,12 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
+
+            tb_dict_['assignment_error'] = mean(self.metrics.assignment_error)
+            tb_dict_['missed_gt_error'] = mean(self.metrics.missed_gt_error)
+            tb_dict_['classification_error'] = mean(self.metrics.classification_error)
+            tb_dict_['precision'] = mean(self.metrics.precision)
+            tb_dict_['recall'] = mean(self.metrics.recall)
 
             ret_dict = {
                 'loss': loss
