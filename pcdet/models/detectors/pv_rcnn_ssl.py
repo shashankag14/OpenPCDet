@@ -3,7 +3,7 @@ import os
 
 import torch
 import torch.nn.functional as F
-from statistics import mean
+import numpy as np
 
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
@@ -239,7 +239,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         
                         self.metrics.tp.append(float('nan'))
                         self.metrics.fp.append(float('nan'))
-                        self.metrics.fn.append(ori_unlabeled_boxes.shape[1])
+                        self.metrics.fn.append(float('nan'))
 
                         self.metrics.assignment_error.append(float('nan'))
                         self.metrics.missed_gt_error.append(float('nan'))
@@ -328,11 +328,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
 
-            tb_dict_['assignment_error'] = mean(self.metrics.assignment_error)
-            tb_dict_['missed_gt_error'] = mean(self.metrics.missed_gt_error)
-            tb_dict_['classification_error'] = mean(self.metrics.classification_error)
-            tb_dict_['precision'] = mean(self.metrics.precision)
-            tb_dict_['recall'] = mean(self.metrics.recall)
+            tb_dict_['assignment_error'] = np.nanmean(self.metrics.assignment_error)
+            tb_dict_['missed_gt_error'] = np.nanmean(self.metrics.missed_gt_error)
+            tb_dict_['classification_error'] = np.nanmean(self.metrics.classification_error)
+            tb_dict_['precision'] = np.nanmean(self.metrics.precision)
+            tb_dict_['recall'] = np.nanmean(self.metrics.recall)
 
             ret_dict = {
                 'loss': loss
