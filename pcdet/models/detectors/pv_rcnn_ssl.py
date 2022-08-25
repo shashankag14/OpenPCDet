@@ -1,13 +1,14 @@
 import copy
 import os
 
+from statistics import mean
 import torch
 import torch.nn.functional as F
 import numpy as np
 
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-from pcdet.utils.cal_quality_utils import QualityMetric
+from pcdet.utils.cal_quality_utils import MetricRecord
 
 from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
@@ -45,7 +46,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
-        self.metrics = QualityMetric()
+        self.num_class = num_class
+        self.metric_table = MetricRecord(self.num_class)
 
     def forward(self, batch_dict):
         if self.training:
@@ -71,11 +73,15 @@ class PVRCNN_SSL(Detector3DTemplate):
                         batch_dict_ema = cur_module(batch_dict_ema)
                 pred_dicts, recall_dicts = self.pv_rcnn_ema.post_processing(batch_dict_ema,
                                                                             no_recall_dict=True, override_thresh=0.0, no_nms=self.no_nms)
-
+                
                 pseudo_boxes = []
                 pseudo_scores = []
                 pseudo_sem_scores = []
+                avg_pseudo_box_num = []
                 max_pseudo_box_num = 0
+
+                self.metric_table.reset()
+                
                 for ind in unlabeled_inds:
                     pseudo_score = pred_dicts[ind]['pred_scores'] 
                     pseudo_box = pred_dicts[ind]['pred_boxes']
@@ -88,13 +94,16 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_scores.append(pseudo_label.new_zeros((1,)).float())
                         continue
 
-
                     conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
                         0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label-1).unsqueeze(-1))
 
                     valid_inds = pseudo_score > conf_thresh.squeeze()
-
+                    
                     valid_inds = valid_inds * (pseudo_sem_score > self.sem_thresh[0])
+                    rej_labels = pseudo_label[~valid_inds]
+                    rej_labels_per_class = torch.bincount(rej_labels, minlength=len(self.thresh)+1)                    
+                    for k in range(self.num_class+1):
+                        self.metric_table.metric_record[k].metrics['rej_pseudo_lab'].update(rej_labels_per_class[k].item())
 
                     pseudo_sem_score = pseudo_sem_score[valid_inds]
                     pseudo_box = pseudo_box[valid_inds]
@@ -104,7 +113,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                     pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
                     pseudo_sem_scores.append(pseudo_sem_score)
                     pseudo_scores.append(pseudo_score)
-
+                    
+                    avg_pseudo_box_num.append(pseudo_box.shape[0])
                     if pseudo_box.shape[0] > max_pseudo_box_num:
                         max_pseudo_box_num = pseudo_box.shape[0]
 
@@ -156,6 +166,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_fgs = []
                 sem_score_fgs = []
                 sem_score_bgs = []
+                fg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_FG_THRESH']
+                bg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_BG_THRESH']
                 for i, ind in enumerate(unlabeled_inds):
                     # statistics
                     anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(
@@ -169,48 +181,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_ious.append(iou_max.mean().unsqueeze(dim=0))
                         acc = (ori_unlabeled_boxes[i][:, 7].gather(dim=0, index=asgn) == cls_pseudo).float().mean()
                         pseudo_accs.append(acc.unsqueeze(0))
-                        fg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_FG_THRESH']
-                        bg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_BG_THRESH']  # bg_thresh includes both easy and hard bgs
                         fg = (iou_max > fg_thresh).float().sum(dim=0, keepdim=True) / len(nonzero_inds) 
-                        
-                        # Store tp, fp, fn per batch
-                        tp_mask = iou_max >= fg_thresh
-                        tp = tp_mask.sum().item()
-                        fp = iou_max.shape[0] - tp
-                        # gt boxes that missed by tp boxes are fn boxes
-                        # fn (gt boxes are fg but pseduo boxes are bg) = total gt boxes - tp
-                        fn = ori_unlabeled_boxes.shape[1] - tp
-                        self.metrics.tp.append(tp)
-                        self.metrics.fp.append(fp)
-                        self.metrics.fn.append(fn)
-
-                        # get tp boxes and their corresponding gt boxes
-                        tp_pseudo_boxes = batch_dict['gt_boxes'][ind][nonzero_inds[tp_mask]]  
-                        tp_gt_boxes = ori_unlabeled_boxes[i][asgn, :][tp_mask]               
-                        
-                        if tp > 0:
-                            # Used for computing "Assignment error" later (based on Combating Noise paper)
-                            trans_err, orient_err, scale_err = self.metrics.cal_diff(tp_pseudo_boxes, tp_gt_boxes, tp)
-                            self.metrics.assignment_error.append(trans_err + orient_err + scale_err)
-
-                            self.metrics.precision.append(tp / (tp + fp))
-                            self.metrics.recall.append(tp / (tp + fn))
-
-                        else :
-                            self.metrics.assignment_error.append(float('nan'))
-
-                            self.metrics.precision.append(float('nan'))
-                            self.metrics.recall.append(float('nan'))
-
-                        self.metrics.missed_gt_error.append(fn)
-
-                        self.metrics.classification_error.append((1 - acc).item())
-
 
                         sem_score_fg = (pseudo_sem_scores[i][nonzero_inds] * (iou_max > fg_thresh).float()).sum(dim=0, keepdim=True) \
-                                       / torch.clamp((iou_max > fg_thresh).float().sum(dim=0, keepdim=True), min=1.0)
+                                        / torch.clamp((iou_max > fg_thresh).float().sum(dim=0, keepdim=True), min=1.0)
                         sem_score_bg = (pseudo_sem_scores[i][nonzero_inds] * (iou_max < bg_thresh).float()).sum(dim=0, keepdim=True) \
-                                       / torch.clamp((iou_max < bg_thresh).float().sum(dim=0, keepdim=True), min=1.0)
+                                        / torch.clamp((iou_max < bg_thresh).float().sum(dim=0, keepdim=True), min=1.0)
                         pseudo_fgs.append(fg)
                         sem_score_fgs.append(sem_score_fg)
                         sem_score_bgs.append(sem_score_bg)
@@ -224,26 +200,22 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                             if self.supervise_mode == 2:
                                 batch_dict['gt_boxes'][ind, ...][:len(asgn), 0:3] += 0.1 * torch.randn((len(asgn), 3), device=iou_max.device) * \
-                                                                                     batch_dict['gt_boxes'][ind, ...][
-                                                                                     :len(asgn), 3:6]
+                                                                                        batch_dict['gt_boxes'][ind, ...][
+                                                                                        :len(asgn), 3:6]
                                 batch_dict['gt_boxes'][ind, ...][:len(asgn), 3:6] += 0.1 * torch.randn((len(asgn), 3), device=iou_max.device) * \
-                                                                                     batch_dict['gt_boxes'][ind, ...][
-                                                                                     :len(asgn), 3:6]
+                                                                                        batch_dict['gt_boxes'][ind, ...][
+                                                                                        :len(asgn), 3:6]
+                        
+                        self.metric_table.update_record(batch_dict, iou_max, ori_unlabeled_boxes,
+                                                        fg_thresh, i, ind, nonzero_inds, asgn, acc, cls_pseudo)
+
                     else:
                         nan = torch.tensor([float('nan')], device=unlabeled_inds.device)
                         sem_score_fgs.append(nan)
                         sem_score_bgs.append(nan)
                         pseudo_ious.append(nan)
                         pseudo_accs.append(nan)
-                        pseudo_fgs.append(nan)
-                        
-                        self.metrics.tp.append(float('nan'))
-                        self.metrics.fp.append(float('nan'))
-                        self.metrics.fn.append(float('nan'))
-
-                        self.metrics.assignment_error.append(float('nan'))
-                        self.metrics.missed_gt_error.append(float('nan'))
-                        self.metrics.classification_error.append(float('nan'))  
+                        pseudo_fgs.append(nan) 
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
@@ -327,12 +299,22 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
-
-            tb_dict_['assignment_error'] = np.nanmean(self.metrics.assignment_error)
-            tb_dict_['missed_gt_error'] = np.nanmean(self.metrics.missed_gt_error)
-            tb_dict_['classification_error'] = np.nanmean(self.metrics.classification_error)
-            tb_dict_['precision'] = np.nanmean(self.metrics.precision)
-            tb_dict_['recall'] = np.nanmean(self.metrics.recall)
+            
+            tb_dict_['avg_pseudo_box_num'] = mean(avg_pseudo_box_num)
+            
+            class_names = ['overall', 'car', 'cyc', 'ped']
+            for k in range(self.num_class+1):
+                tb_dict_['rej_pseudo_labels_' + class_names[k]] = self.metric_table.metric_record[k].metrics['rej_pseudo_lab'].avg
+                
+                tb_dict_['assignment_err_' + class_names[k]] = self.metric_table.metric_record[k].metrics['assignment_err'].avg
+                tb_dict_['cls_err_' + class_names[k]] = self.metric_table.metric_record[k].metrics['cls_err'].avg
+                
+                tb_dict_['precision_' + class_names[k]] = self.metric_table.metric_record[k].metrics['precision'].avg
+                tb_dict_['recall_' + class_names[k]] = self.metric_table.metric_record[k].metrics['recall'].avg
+                
+                tb_dict_['tp_' + class_names[k]] = self.metric_table.metric_record[k].metrics['tp'].avg
+                tb_dict_['fp_' + class_names[k]] = self.metric_table.metric_record[k].metrics['fp'].avg
+                tb_dict_['fn_' + class_names[k]] = self.metric_table.metric_record[k].metrics['fn'].avg
 
             ret_dict = {
                 'loss': loss
