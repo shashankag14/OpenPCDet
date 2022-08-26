@@ -89,64 +89,69 @@ class Metric(object):
     # Merged 'cal_scale_diff' and 'cal_tp_metric' of st3d for computing trans_err, orient_err, scale_err
     def update_metrics(self, tp_boxes, gt_boxes):
         tp = self.metrics['tp'].val
-        if tp :
-            trans_err, orient_err, scale_err = self.compute_assignment_err(tp_boxes, gt_boxes)
-            self.metrics['assignment_err'].update(trans_err/tp + orient_err/tp + scale_err/tp)
-        
-            precision = tp / (tp + self.metrics['fp'].val)
-            recall = tp / (tp + self.metrics['fn'].val)
-            self.metrics['precision'].update(precision)
-            self.metrics['recall'].update(recall)
+
+        trans_err, orient_err, scale_err = self.compute_assignment_err(tp_boxes, gt_boxes)
+        self.metrics['assignment_err'].update(trans_err/tp + orient_err/tp + scale_err/tp)
+    
+        precision = tp / (tp + self.metrics['fp'].val)
+        recall = tp / (tp + self.metrics['fn'].val)
+        self.metrics['precision'].update(precision)
+        self.metrics['recall'].update(recall)
 
 class MetricRecord(object):
     def __init__(self, num_class):
         self.num_class = num_class
-        self.metric_record = [Metric() for i in range(self.num_class+1)]
+        # self.metric_record = [Metric() for i in range(self.num_class+1)]
+        self.metric_record = {'class_agnostic': Metric(), 'car':  Metric(),
+                                'cyc': Metric(), 'ped': Metric()}
     
     def reset(self):
-        for _class in range(self.num_class+1) :
-               self.metric_record[_class].reset()
-
-    def update_record(self, batch_dict, iou_max, ori_unlabeled_boxes, fg_thresh, i, ind, nonzero_inds, asgn, acc, cls_pseudo):
+        for key in self.metric_record :
+               self.metric_record[key].reset()
+    
+    def update_record(self, pseudo_boxes, gt_boxes, iou_max, fg_thresh, asgn, cls_pseudo):
         # Store tp, fp, fn per batch
         tp_mask = iou_max >= fg_thresh
-        gt_labels = ori_unlabeled_boxes[i][:, 7]
-        num_gt_labels_class=torch.bincount(gt_labels.type(torch.int64), minlength=4)
+        gt_labels = gt_boxes[:, 7]
+        num_gt_labels_per_class=torch.bincount(gt_labels.type(torch.int64), minlength=4)
+
+        for class_ind, class_key in enumerate(self.metric_record):
+            # class agnostic metrics 
+            if class_key == 'class_agnostic':
+                # update tp, fp, fn
+                self.metric_record[class_key].metrics['tp'].update(tp_mask.sum().item())
+                self.metric_record[class_key].metrics['fp'].update(iou_max.shape[0] - tp_mask.sum().item())
+                self.metric_record[class_key].metrics['fn'].update((num_gt_labels_per_class[1:]).sum().item() - tp_mask.sum().item())
+                
+                if tp_mask.sum().item() :
+                    # get tp boxes and their corresponding gt boxes
+                    tp_pseudo_boxes = pseudo_boxes[tp_mask]
+                    tp_gt_boxes = gt_boxes[asgn, :][tp_mask]
+                    # update assignment error, precision and recall
+                    self.metric_record[class_key].update_metrics(tp_pseudo_boxes, tp_gt_boxes)
+
+                # update classification error
+                correct_matches = (gt_boxes[:, 7].gather(dim=0, index=asgn) == cls_pseudo).float()
+                self.metric_record[class_key].metrics['cls_err'].update((1 - correct_matches.mean()).item())
             
-        # class agnostic metrics 
-        # update tp, fp, fn
-        self.metric_record[0].metrics['tp'].update(tp_mask.sum().item())
-        self.metric_record[0].metrics['fp'].update(iou_max.shape[0] - tp_mask.sum().item())
-        self.metric_record[0].metrics['fn'].update((num_gt_labels_class[1:]).sum().item() - tp_mask.sum().item())
-        
-        # get tp boxes and their corresponding gt boxes
-        tp_pseudo_boxes = batch_dict['gt_boxes'][ind][nonzero_inds[tp_mask]]  
-        tp_gt_boxes = ori_unlabeled_boxes[i][asgn, :][tp_mask]
-        # update assignment error, precision and recall
-        self.metric_record[0].update_metrics(tp_pseudo_boxes, tp_gt_boxes)
+            # update class-wise metrics 
+            else :
+                # update tp, fp, fn 
+                class_mask = cls_pseudo == class_ind
+                class_tp_mask = tp_mask & class_mask
+                self.metric_record[class_key].metrics['tp'].update(class_tp_mask.sum().item())
+                self.metric_record[class_key].metrics['fp'].update(iou_max[class_mask].shape[0] - class_tp_mask.sum().item())
+                self.metric_record[class_key].metrics['fn'].update(num_gt_labels_per_class[class_ind].item() - class_tp_mask.sum().item())
+                
+                if class_tp_mask.sum().item() : 
+                    # get tp boxes and their corresponding gt boxes
+                    tp_pseudo_boxes_per_class = pseudo_boxes[class_tp_mask]
+                    tp_gt_boxes_per_class = gt_boxes[asgn, :][class_tp_mask]
+                    # update assignment error, precision and recall   
+                    self.metric_record[class_key].update_metrics(tp_pseudo_boxes_per_class, tp_gt_boxes_per_class)
 
-        # update cls error
-        self.metric_record[0].metrics['cls_err'].update((1 - acc).item())
-
-        correct_matches = (ori_unlabeled_boxes[i][:, 7].gather(dim=0, index=asgn) == cls_pseudo).float()
-        # update class wise metrics 
-        for _class in range(1, self.num_class+1):
-            # update tp, fp, fn #TODO : check this
-            class_tp_mask = tp_mask[cls_pseudo==_class]
-            self.metric_record[_class].metrics['tp'].update(class_tp_mask.sum().item())
-            self.metric_record[_class].metrics['fp'].update(iou_max[cls_pseudo==_class].shape[0] - class_tp_mask.sum().item())
-            self.metric_record[_class].metrics['fn'].update(num_gt_labels_class[_class].item() - class_tp_mask.sum().item())
-            
-            # update classifcation error
-            cls_err_per_class = torch.Tensor([1])
-            if class_tp_mask.numel() : 
-                # get tp boxes and their corresponding gt boxes
-                tp_pseudo_boxes_per_class = batch_dict['gt_boxes'][ind][nonzero_inds[cls_pseudo==_class]][tp_mask]
-                tp_gt_boxes_per_class = ori_unlabeled_boxes[i][asgn, :][cls_pseudo==_class][tp_mask]
-                # update assignment error, precision and recall   
-                self.metric_record[_class].update_metrics(tp_pseudo_boxes_per_class, tp_gt_boxes_per_class)
-
-                cls_err_per_class = (1 - correct_matches[class_tp_mask].mean())  
-            self.metric_record[_class].metrics['cls_err'].update(cls_err_per_class.item())
+                # update classification error
+                cls_err_per_class = (1 - correct_matches[class_mask].mean())  
+                self.metric_record[class_key].metrics['cls_err'].update(cls_err_per_class.item())
 
 

@@ -102,8 +102,11 @@ class PVRCNN_SSL(Detector3DTemplate):
                     valid_inds = valid_inds * (pseudo_sem_score > self.sem_thresh[0])
                     rej_labels = pseudo_label[~valid_inds]
                     rej_labels_per_class = torch.bincount(rej_labels, minlength=len(self.thresh)+1)                    
-                    for k in range(self.num_class+1):
-                        self.metric_table.metric_record[k].metrics['rej_pseudo_lab'].update(rej_labels_per_class[k].item())
+                    for class_ind, class_key in enumerate(self.metric_table.metric_record):
+                        if class_key == 'class_agnostic':
+                            self.metric_table.metric_record[class_key].metrics['rej_pseudo_lab'].update(rej_labels_per_class[1:].sum().item())
+                        else:
+                            self.metric_table.metric_record[class_key].metrics['rej_pseudo_lab'].update(rej_labels_per_class[class_ind].item())
 
                     pseudo_sem_score = pseudo_sem_score[valid_inds]
                     pseudo_box = pseudo_box[valid_inds]
@@ -206,8 +209,9 @@ class PVRCNN_SSL(Detector3DTemplate):
                                                                                         batch_dict['gt_boxes'][ind, ...][
                                                                                         :len(asgn), 3:6]
                         
-                        self.metric_table.update_record(batch_dict, iou_max, ori_unlabeled_boxes,
-                                                        fg_thresh, i, ind, nonzero_inds, asgn, acc, cls_pseudo)
+                        pseudo_boxes = batch_dict['gt_boxes'][ind][nonzero_inds]
+                        gt_boxes = ori_unlabeled_boxes[i]
+                        self.metric_table.update_record(pseudo_boxes, gt_boxes, iou_max, fg_thresh, asgn, cls_pseudo)
 
                     else:
                         nan = torch.tensor([float('nan')], device=unlabeled_inds.device)
@@ -302,19 +306,18 @@ class PVRCNN_SSL(Detector3DTemplate):
             
             tb_dict_['avg_pseudo_box_num'] = mean(avg_pseudo_box_num)
             
-            class_names = ['overall', 'car', 'cyc', 'ped']
-            for k in range(self.num_class+1):
-                tb_dict_['rej_pseudo_labels_' + class_names[k]] = self.metric_table.metric_record[k].metrics['rej_pseudo_lab'].avg
+            for key in self.metric_table.metric_record:
+                tb_dict_['rej_pseudo_labels_' + key] = self.metric_table.metric_record[key].metrics['rej_pseudo_lab'].avg
                 
-                tb_dict_['assignment_err_' + class_names[k]] = self.metric_table.metric_record[k].metrics['assignment_err'].avg
-                tb_dict_['cls_err_' + class_names[k]] = self.metric_table.metric_record[k].metrics['cls_err'].avg
+                tb_dict_['assignment_err_' + key] = self.metric_table.metric_record[key].metrics['assignment_err'].avg
+                tb_dict_['cls_err_' + key] = self.metric_table.metric_record[key].metrics['cls_err'].avg
                 
-                tb_dict_['precision_' + class_names[k]] = self.metric_table.metric_record[k].metrics['precision'].avg
-                tb_dict_['recall_' + class_names[k]] = self.metric_table.metric_record[k].metrics['recall'].avg
+                tb_dict_['precision_' + key] = self.metric_table.metric_record[key].metrics['precision'].avg
+                tb_dict_['recall_' + key] = self.metric_table.metric_record[key].metrics['recall'].avg
                 
-                tb_dict_['tp_' + class_names[k]] = self.metric_table.metric_record[k].metrics['tp'].avg
-                tb_dict_['fp_' + class_names[k]] = self.metric_table.metric_record[k].metrics['fp'].avg
-                tb_dict_['fn_' + class_names[k]] = self.metric_table.metric_record[k].metrics['fn'].avg
+                tb_dict_['tp_' + key] = self.metric_table.metric_record[key].metrics['tp'].avg
+                tb_dict_['fp_' + key] = self.metric_table.metric_record[key].metrics['fp'].avg
+                tb_dict_['fn_' + key] = self.metric_table.metric_record[key].metrics['fn'].avg
 
             ret_dict = {
                 'loss': loss
