@@ -3,9 +3,8 @@ import math
 import numpy as np
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 
-
+"""Computes and stores the average and current value"""
 class AverageMeter(object):
-    """Computes and stores the average and current value"""
     def __init__(self):
         self.reset()
 
@@ -15,9 +14,7 @@ class AverageMeter(object):
         self.sum = 0
         self.count = 0
 
-    # TODO find avg as per the dtype of metrics. eg. tensors or list
     def update(self, val, n=1):
-        ## TODO change it for NaN
         assert np.isscalar(val)
         
         if not np.isnan(val):
@@ -26,7 +23,11 @@ class AverageMeter(object):
             self.sum += val * n
             self.count += n
             self.avg = self.sum / self.count
-            
+
+'''Computes quality metrics - tp, fp, fn, precision, recall, assignment error, cls error and 
+    num of rejections made due to pseudo label filtering
+    
+    Note : Adapted from st3d cal_quality_utils.py and modified'''         
 class Metric(object):
     def __init__(self):
         self.metrics = {'tp': AverageMeter(), 'fp': AverageMeter(), 'fn': AverageMeter(), 
@@ -36,6 +37,31 @@ class Metric(object):
     def reset(self):
         for key in self.metrics:
             self.metrics[key].reset()
+    
+    def get_true_pos(self, mask):
+        return mask.sum().item()
+    
+    def get_false_pos(self, total_preds, tp):
+        return total_preds - tp
+    
+    def get_false_neg(self, total_gts, tp):
+        return total_gts - tp
+
+    def get_precision_recall(self, tp, fp, fn):
+        assert tp > 0, "True positives are zero"
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
+        return precision, recall
+
+    def get_cls_err(self, pseudo_labels, gt_labels, iou_match_ind, class_mask=None):
+        # find correct matches b/w PLs and GTs 
+        correct_matches = (gt_labels.gather(dim=0, index=iou_match_ind) == pseudo_labels).float()
+        # if computing error class-wise, find correct matches class wise
+        if class_mask != None :
+            assert class_mask.shape == correct_matches.shape
+            correct_matches = correct_matches[class_mask]
+        cls_err = (1 - correct_matches.mean()).item()
+        return cls_err
 
     @staticmethod
     def cor_angle_range(angle):
@@ -51,6 +77,7 @@ class Metric(object):
 
         return angle
 
+    '''Compute orientation/angle difference based on L1 distance'''
     def cal_angle_diff(self, angle1, angle2):
         # angle is from x to y, anti-clockwise
         angle1 = self.cor_angle_range(angle1)
@@ -62,9 +89,9 @@ class Metric(object):
 
         return diff    
 
-    def compute_assignment_err(self, tp_boxes, gt_boxes):
+    def get_assignment_err(self, tp_boxes, gt_boxes, tp):
         assert tp_boxes.shape[0] == gt_boxes.shape[0]
-
+        assert tp > 0, "True positives are zero"
         # L2 distance xy only
         center_distance = torch.norm(tp_boxes[:, :2] - gt_boxes[:, :2], dim=1)
         trans_err = center_distance.sum().item()
@@ -84,74 +111,72 @@ class Metric(object):
         max_ious, _ = torch.max(iou_matrix, dim=1)
         scale_err = (1 - max_ious).sum().item()
 
-        return trans_err, orient_err, scale_err 
+        return trans_err/tp + orient_err/tp + scale_err/tp
 
-    # Merged 'cal_scale_diff' and 'cal_tp_metric' of st3d for computing trans_err, orient_err, scale_err
-    def update_metrics(self, tp_boxes, gt_boxes):
-        tp = self.metrics['tp'].val
 
-        trans_err, orient_err, scale_err = self.compute_assignment_err(tp_boxes, gt_boxes)
-        self.metrics['assignment_err'].update(trans_err/tp + orient_err/tp + scale_err/tp)
-    
-        precision = tp / (tp + self.metrics['fp'].val)
-        recall = tp / (tp + self.metrics['fn'].val)
-        self.metrics['precision'].update(precision)
-        self.metrics['recall'].update(recall)
-
+'''Hold record for generic(class agnostic) as well as per class-wise metrics'''
 class MetricRecord(object):
-    def __init__(self, num_class):
-        self.num_class = num_class
-        # self.metric_record = [Metric() for i in range(self.num_class+1)]
+    def __init__(self):
         self.metric_record = {'class_agnostic': Metric(), 'car':  Metric(),
                                 'cyc': Metric(), 'ped': Metric()}
     
+    '''reset the records at the beginning of each epoch'''
     def reset(self):
         for key in self.metric_record :
                self.metric_record[key].reset()
-    
+
+    '''update metrics - tp, fp, fn, assignment err and cls err class agnosticaly and class wise'''
     def update_record(self, pseudo_boxes, gt_boxes, iou_max, fg_thresh, asgn, cls_pseudo):
-        # Store tp, fp, fn per batch
+        # Create mask for preds satifying the FG threshold and compute the metrics on that mask
         tp_mask = iou_max >= fg_thresh
         gt_labels = gt_boxes[:, 7]
-        num_gt_labels_per_class=torch.bincount(gt_labels.type(torch.int64), minlength=4)
+        # Used for FNs : Count total number of gt labels per class 
+        num_gt_labels_per_class = torch.bincount(gt_labels.type(torch.int64), minlength=4)
 
         for class_ind, class_key in enumerate(self.metric_record):
-            # class agnostic metrics 
+            # CLASS-AGNOSTIC METRICS
             if class_key == 'class_agnostic':
-                # update tp, fp, fn
-                self.metric_record[class_key].metrics['tp'].update(tp_mask.sum().item())
-                self.metric_record[class_key].metrics['fp'].update(iou_max.shape[0] - tp_mask.sum().item())
-                self.metric_record[class_key].metrics['fn'].update((num_gt_labels_per_class[1:]).sum().item() - tp_mask.sum().item())
-                
-                if tp_mask.sum().item() :
-                    # get tp boxes and their corresponding gt boxes
-                    tp_pseudo_boxes = pseudo_boxes[tp_mask]
-                    tp_gt_boxes = gt_boxes[asgn, :][tp_mask]
-                    # update assignment error, precision and recall
-                    self.metric_record[class_key].update_metrics(tp_pseudo_boxes, tp_gt_boxes)
+                # tp, fp, fn, cls err
+                tp      = self.metric_record[class_key].get_true_pos(tp_mask)
+                fp      = self.metric_record[class_key].get_false_pos(iou_max.shape[0], tp)
+                fn      = self.metric_record[class_key].get_false_neg((num_gt_labels_per_class[1:]).sum().item(), tp)
+                cls_err = self.metric_record[class_key].get_cls_err(cls_pseudo, gt_boxes[:, 7], asgn)
 
-                # update classification error
-                correct_matches = (gt_boxes[:, 7].gather(dim=0, index=asgn) == cls_pseudo).float()
-                self.metric_record[class_key].metrics['cls_err'].update((1 - correct_matches.mean()).item())
+                # compute assignment error, precision and recall ONLY if there are any TPs
+                if tp :
+                    # get tp boxes and their corresponding gt boxes
+                    tp_pseudo_boxes     = pseudo_boxes[tp_mask]
+                    tp_gt_boxes         = gt_boxes[asgn, :][tp_mask]
+                    assignment_err      = self.metric_record[class_key].get_assignment_err(tp_pseudo_boxes, 
+                                                                                        tp_gt_boxes, tp)
+                    precision, recall   = self.metric_record[class_key].get_precision_recall(tp, fp, fn)
             
-            # update class-wise metrics 
+            # CLASS-WISE METRICS
             else :
-                # update tp, fp, fn 
+                # find class wise mask
                 class_mask = cls_pseudo == class_ind
                 class_tp_mask = tp_mask & class_mask
-                self.metric_record[class_key].metrics['tp'].update(class_tp_mask.sum().item())
-                self.metric_record[class_key].metrics['fp'].update(iou_max[class_mask].shape[0] - class_tp_mask.sum().item())
-                self.metric_record[class_key].metrics['fn'].update(num_gt_labels_per_class[class_ind].item() - class_tp_mask.sum().item())
-                
-                if class_tp_mask.sum().item() : 
+                # tp, fp, fn, cls err
+                tp      = self.metric_record[class_key].get_true_pos(class_tp_mask)
+                fp      = self.metric_record[class_key].get_false_pos(iou_max[class_mask].shape[0], tp)
+                fn      = self.metric_record[class_key].get_false_neg(num_gt_labels_per_class[class_ind].item(), tp)
+                cls_err = self.metric_record[class_key].get_cls_err(cls_pseudo, gt_boxes[:, 7], asgn, class_mask)
+
+                # compute assignment error, precision and recall ONLY if there are any TPs 
+                if tp : 
                     # get tp boxes and their corresponding gt boxes
                     tp_pseudo_boxes_per_class = pseudo_boxes[class_tp_mask]
-                    tp_gt_boxes_per_class = gt_boxes[asgn, :][class_tp_mask]
-                    # update assignment error, precision and recall   
-                    self.metric_record[class_key].update_metrics(tp_pseudo_boxes_per_class, tp_gt_boxes_per_class)
+                    tp_gt_boxes_per_class     = gt_boxes[asgn, :][class_tp_mask] 
+                    assignment_err            = self.metric_record[class_key].get_assignment_err(tp_pseudo_boxes_per_class, 
+                                                                                                tp_gt_boxes_per_class, tp)
+                    precision, recall         = self.metric_record[class_key].get_precision_recall(tp, fp, fn)
 
-                # update classification error
-                cls_err_per_class = (1 - correct_matches[class_mask].mean())  
-                self.metric_record[class_key].metrics['cls_err'].update(cls_err_per_class.item())
-
+            self.metric_record[class_key].metrics['tp'].update(tp)
+            self.metric_record[class_key].metrics['fp'].update(fp)
+            self.metric_record[class_key].metrics['fn'].update(fn)
+            self.metric_record[class_key].metrics['cls_err'].update(cls_err)
+            if tp : 
+                self.metric_record[class_key].metrics['assignment_err'].update(assignment_err)
+                self.metric_record[class_key].metrics['precision'].update(precision)
+                self.metric_record[class_key].metrics['recall'].update(recall)
 

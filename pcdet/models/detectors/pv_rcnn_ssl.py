@@ -46,8 +46,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
-        self.num_class = num_class
-        self.metric_table = MetricRecord(self.num_class)
+        self.metric_table = MetricRecord()
 
     def forward(self, batch_dict):
         if self.training:
@@ -100,6 +99,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     valid_inds = pseudo_score > conf_thresh.squeeze()
                     
                     valid_inds = valid_inds * (pseudo_sem_score > self.sem_thresh[0])
+                    
                     rej_labels = pseudo_label[~valid_inds]
                     rej_labels_per_class = torch.bincount(rej_labels, minlength=len(self.thresh)+1)                    
                     for class_ind, class_key in enumerate(self.metric_table.metric_record):
@@ -214,6 +214,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         self.metric_table.update_record(pseudo_boxes, gt_boxes, iou_max, fg_thresh, asgn, cls_pseudo)
 
                     else:
+                        #TODO : metrics record here
                         nan = torch.tensor([float('nan')], device=unlabeled_inds.device)
                         sem_score_fgs.append(nan)
                         sem_score_bgs.append(nan)
