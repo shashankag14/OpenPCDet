@@ -421,6 +421,18 @@ class PVRCNN_SSL(Detector3DTemplate):
             if metric_name in results.keys():
                 statistics[metric_name] = results[metric_name]
 
+        if self.model_cfg.get('USE_SECONDARY_METRIC', False) and 'old_metrics_statistics' in results:
+            old_metric_statistics = results['old_metrics_statistics']
+            metrics_name = ['tp', 'fp', 'fn', 'assignment_err', 'cls_err', 'precision', 'recall', 'rej_pseudo_lab']
+            
+            for m, metric_name in enumerate(metrics_name):
+                cls_comb_stats = {}
+                for c, cname in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                    metric_value = old_metric_statistics[c, m].item() 
+                    if not np.isnan(metric_value):
+                        cls_comb_stats[cname] = metric_value
+                statistics[metric_name+'_per_batch'] = cls_comb_stats
+
         for key, val in statistics.items():
             if isinstance(val, list):
                 statistics[key] = np.nanmean(val)

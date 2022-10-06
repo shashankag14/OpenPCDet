@@ -130,6 +130,7 @@ class ClassWiseMetric(object):
     def __init__(self, class_names):
         self.class_names = class_names
         self.class_metrics = {cls: Metrics() for cls in class_names}
+        self.metrics_name = ['tp', 'fp', 'fn', 'assignment_err', 'cls_err', 'precision', 'recall', 'rej_pseudo_lab']
 
     '''reset the records at the beginning of each epoch'''
     def reset(self):
@@ -145,17 +146,21 @@ class ClassWiseMetric(object):
         tp_mask = iou_max >= fg_thresh
         gt_labels = gt_boxes[:, 7]
         # Used for FNs : Count total number of gt labels per class 
-        num_gt_labels_per_class = torch.bincount(gt_labels.type(torch.int64), minlength=4)
+        # NOTE : cls_pseudo (coming as an input) has been already subtracted by 1 in KITTIEval, so the cls values are now correctly mapped  
+        num_gt_labels_per_class = torch.bincount(gt_labels.type(torch.int64), minlength=len(self.class_names))
 
         for cls, metrics in self.class_metrics.items():
             # find class wise mask
-            cls_id = self.class_names.index(cls) + 1
+            cls_id = self.class_names.index(cls)
             class_mask = cls_pseudo == cls_id
             class_tp_mask = tp_mask & class_mask
             # tp, fp, fn, cls err
             tp = metrics.get_true_pos(class_tp_mask)
             fp = metrics.get_false_pos(iou_max[class_mask].shape[0], tp)
-            fn = metrics.get_false_neg(num_gt_labels_per_class[cls_id].item(), tp)
+            if num_gt_labels_per_class[cls_id].item() > tp :
+                fn = metrics.get_false_neg(num_gt_labels_per_class[cls_id].item(), tp)
+            else :
+                fn = 0
             cls_err = metrics.get_cls_err(cls_pseudo, gt_boxes[:, 7], asgn, class_mask)
 
             # compute assignment error, precision and recall ONLY if there are any TPs

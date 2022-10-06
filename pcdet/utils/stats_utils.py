@@ -9,6 +9,7 @@ import pickle
 
 from pcdet.datasets.kitti.kitti_object_eval_python import eval as kitti_eval
 from torchmetrics import Metric
+from pcdet.utils.cal_quality_utils import ClassWiseMetric
 import torch
 import numpy as np
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
@@ -27,6 +28,7 @@ class KITTIEVAL(Metric):
         super().__init__(**kwargs)
         # TODO(farzad): Move some of these to init args
         current_classes = ['Car', 'Pedestrian', 'Cyclist']
+        self.current_classes_names = current_classes
         self.metric = 2  # evaluation only for 3D metric (2)
         overlap_0_7 = np.array([[0.7, 0.5, 0.5, 0.7, 0.5, 0.7],
                                 [0.7, 0.5, 0.5, 0.7, 0.5, 0.7],
@@ -55,6 +57,13 @@ class KITTIEVAL(Metric):
         self.add_state("sem_score_bgs", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("num_pred_boxes", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("num_gt_boxes", default=torch.tensor((0,)), dist_reduce_fx='cat')
+        
+        if cfg.MODEL.USE_SECONDARY_METRIC:
+            # Old metrics (per batch) object and states to compare with KITTIEval metrics
+            self.old_metrics = ClassWiseMetric(self.current_classes_names)
+            num_metrics = len(self.old_metrics.metrics_name)
+            num_cls = len(self.current_classes_names)
+            self.add_state("old_metrics_statistics", default=torch.Tensor(((num_cls, num_metrics))), dist_reduce_fx='cat')
 
     def update(self, preds: [torch.Tensor], targets: [torch.Tensor], pred_scores: [torch.Tensor], pred_sem_scores: [torch.Tensor]) -> None:
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([tar.shape[-1] == 8 for tar in targets])
@@ -124,10 +133,42 @@ class KITTIEVAL(Metric):
                 sem_score_fgs.append(sem_score_fg)
                 sem_score_bgs.append(sem_score_bg)
 
+                if cfg.MODEL.USE_SECONDARY_METRIC:
+                    self.old_metrics.update_metrics_of_all_classes(valid_pred_boxes[:, :-1], valid_gt_boxes, preds_iou_max, 
+                                                                    fg_thresh, assigned_gt_inds, pred_labels)
+                
+            if cfg.MODEL.USE_SECONDARY_METRIC:
+                if num_gts > 0 and num_preds == 0:
+                    # Missed GTs. Probably filtered by sem/obj filters --> see the falsely rejected metric
+                    for gt_cls in targets[i][valid_gts_mask, -1].int():
+                        cls_name = self.current_classes_names[gt_cls.item()-1]
+                        self.old_metrics.get_metrics_of(cls_name).metrics['fn'].update(1)
+                if num_preds > 0 and num_gts == 0:
+                    # False positives. Probably passed sem/obj filters --> see the falsely accepted metric
+                    for pred_cls in preds[i][valid_preds_mask, -1].int():
+                        cls_name = self.current_classes_names[pred_cls.item()-1]
+                        self.old_metrics.get_metrics_of(cls_name).metrics['fp'].update(1)
+
             # The following states are accumulated over updates
             self.detections.append(valid_pred_boxes)
             self.groundtruths.append(valid_gt_boxes)
             self.overlaps.append(overlap)
+
+        # TODO (shashank) : remove redundant code
+        if cfg.MODEL.USE_SECONDARY_METRIC:
+            metrics_name = self.old_metrics.metrics_name
+            num_metrics = len(metrics_name)
+            num_cls = len(self.old_metrics.class_names)
+            cls_metrics = np.nan * np.zeros((num_cls, num_metrics))
+            for c, cname in enumerate(self.old_metrics.class_names):
+                for m, mname in enumerate(metrics_name):
+                    mval = self.old_metrics.get_metrics_of(cname).metrics[mname]
+                    cls_metrics[c, m] = mval.avg
+            # TODO (shashank): explicit reset() required or is it already taken into account when calling KITTIEval's reset ?
+            self.old_metrics.reset()
+
+            # Following states for storing online stats using old metrics (per-batch states)
+            self.old_metrics_statistics = torch.tensor(cls_metrics).cuda()
 
         # The following states are reset on every update (per-batch states)
         self.pred_ious = torch.tensor(pred_ious).cuda().mean()
@@ -137,12 +178,15 @@ class KITTIEVAL(Metric):
         self.sem_score_bgs = torch.tensor(sem_score_bgs).cuda().mean()
         self.num_pred_boxes = torch.tensor(num_pred_boxes).cuda().float().mean()
         self.num_gt_boxes = torch.tensor(num_gt_boxes).cuda().float().mean()
-
+        
     def compute(self, stats_only=True):
         results = {'pred_ious': self.pred_ious.mean(), 'pred_accs': self.pred_accs.mean(),
                    'pred_fgs': self.pred_fgs.mean(), 'sem_score_fgs': self.sem_score_fgs.mean(),
                    'sem_score_bgs': self.sem_score_bgs.mean(), 'num_pred_boxes': self.num_pred_boxes.mean(),
                    'num_gt_boxes': self.num_gt_boxes.mean()}
+        
+        if cfg.MODEL.USE_SECONDARY_METRIC:
+            results['old_metrics_statistics'] = self.old_metrics_statistics
 
         if not stats_only:
             kitti_eval_metrics = eval_class(self.groundtruths, self.detections, self.current_classes,
