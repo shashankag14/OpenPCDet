@@ -63,7 +63,10 @@ class KITTIEVAL(Metric):
             self.old_metrics = ClassWiseMetric(self.current_classes_names)
             num_metrics = len(self.old_metrics.metrics_name)
             num_cls = len(self.current_classes_names)
-            self.add_state("old_metrics_statistics", default=torch.Tensor(((num_cls, num_metrics))), dist_reduce_fx='cat')
+            # TODO (shashank) : Check for dist_reduce_fx and default state setting here. 
+            # dist_reduce_fx is set to None, so synced values will be stacked across the process dimension - (num_process, num_cls, num_metrics)
+            # https://torchmetrics.readthedocs.io/en/stable/pages/implement.html
+            self.add_state("old_metrics_statistics", default=torch.zeros(num_cls, num_metrics))
 
     def update(self, preds: [torch.Tensor], targets: [torch.Tensor], pred_scores: [torch.Tensor], pred_sem_scores: [torch.Tensor]) -> None:
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([tar.shape[-1] == 8 for tar in targets])
@@ -154,7 +157,6 @@ class KITTIEVAL(Metric):
             self.groundtruths.append(valid_gt_boxes)
             self.overlaps.append(overlap)
 
-        # TODO (shashank) : remove redundant code
         if cfg.MODEL.USE_SECONDARY_METRIC:
             metrics_name = self.old_metrics.metrics_name
             num_metrics = len(metrics_name)
@@ -164,7 +166,6 @@ class KITTIEVAL(Metric):
                 for m, mname in enumerate(metrics_name):
                     mval = self.old_metrics.get_metrics_of(cname).metrics[mname]
                     cls_metrics[c, m] = mval.avg
-            # TODO (shashank): explicit reset() required or is it already taken into account when calling KITTIEval's reset ?
             self.old_metrics.reset()
 
             # Following states for storing online stats using old metrics (per-batch states)
@@ -185,8 +186,13 @@ class KITTIEVAL(Metric):
                    'sem_score_bgs': self.sem_score_bgs.mean(), 'num_pred_boxes': self.num_pred_boxes.mean(),
                    'num_gt_boxes': self.num_gt_boxes.mean()}
         
+        # TODO (shashank) : Verify in DDP setting
         if cfg.MODEL.USE_SECONDARY_METRIC:
-            results['old_metrics_statistics'] = self.old_metrics_statistics
+            # In DDP setting, old_metrics_statistics would be a stack of tensors across process dimensions,
+            # thus, computing the mean across these process dims (dim=0)
+            if self.old_metrics_statistics.ndim == 3:
+                self.old_metrics_statistics = self.old_metrics_statistics.mean(dim=0)
+            results['old_metrics_statistics'] = self.old_metrics_statistics 
 
         if not stats_only:
             kitti_eval_metrics = eval_class(self.groundtruths, self.detections, self.current_classes,
