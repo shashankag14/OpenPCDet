@@ -104,6 +104,39 @@ class RoIHeadTemplate(nn.Module):
         batch_dict.pop('batch_index', None)
         return batch_dict
 
+
+    '''
+    Fetch the regression valid mask based on class-adaptive thresholding of Teacher's ROI Labels.
+    Args :
+        roi_scores  : batch_dict['roi_scores_ema'][unlabeled_inds]
+        roi_labels  : batch_dict['roi_labels_ema'][unlabeled_inds] 
+                    (or targets_dict['roi_labels'][unlabeled_inds, :num_rois_ema])
+    Returns:
+        reg_valid_mask
+    '''
+    def _get_reg_valid_mask(self, roi_scores, roi_labels):
+        thresh = self.model_cfg.REG_MASK_THRESH 
+        num_gt_labels_per_class = torch.bincount(roi_labels.flatten().type(torch.int64), minlength=4)
+        reg_valid_mask = torch.zeros_like(roi_scores, dtype=torch.bool)
+        
+        for k in range(1, 4):  # TODO(shashank) 
+            gt_label_mask = (roi_labels == k)
+
+            # normalise the threshold based on number of obj detected per class
+            # lowers the threshold if less samples are detected 
+            normalized_coef = num_gt_labels_per_class[k].item() / torch.max(num_gt_labels_per_class).item()
+
+            # Base thresholds can be class agnostic or class wise
+            # class_thresh  = thresh[k-1] if isinstance(thresh, list) else thresh
+            
+            # dynamic_cls_thresh = class_thresh * normalized_coef
+            dynamic_cls_thresh = thresh * normalized_coef
+            thresh_mask = (roi_scores > dynamic_cls_thresh)
+
+            cur_mask = gt_label_mask & thresh_mask
+            reg_valid_mask = torch.bitwise_xor(cur_mask, reg_valid_mask)
+        return reg_valid_mask.long()
+
     def _override_unlabeled_target(self, targets_dict, batch_dict):
         # merge rois_ema with rois in targets_dict
         unlabeled_inds = batch_dict['unlabeled_inds']
@@ -158,7 +191,9 @@ class RoIHeadTemplate(nn.Module):
         targets_dict['gt_of_rois'][unlabeled_inds, :num_rois_ema] = batch_dict['gt_boxes'][unlabeled_inds]
         targets_dict['rcnn_cls_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['pred_scores_ema'][unlabeled_inds]
         # TODO(farzad) fixed FG threshold.
-        targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = torch.ge(batch_dict['roi_scores_ema'][unlabeled_inds], 0.7).long()
+        # targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = torch.ge(batch_dict['roi_scores_ema'][unlabeled_inds], 0.7).long()
+        targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = self._get_reg_valid_mask(batch_dict['roi_scores_ema'][unlabeled_inds], \
+                                                                                                batch_dict['roi_labels_ema'][unlabeled_inds])
         targets_dict['rcnn_cls_labels'][unlabeled_inds, num_rois_ema:] = -1
         targets_dict['reg_valid_mask'][unlabeled_inds, num_rois_ema:] = 0
         targets_dict['gt_iou_of_rois'][unlabeled_inds, :num_rois_ema] = 0
