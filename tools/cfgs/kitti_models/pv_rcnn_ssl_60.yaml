@@ -166,7 +166,7 @@ MODEL:
         REG_FC: [256, 256]
         DP_RATIO: 0.3
 
-        REG_MASK_THRESH: [0.7, 0.9, 0.9]
+        REG_MASK_THRESH: 0.7
 
         NMS_CONFIG:
             TRAIN:

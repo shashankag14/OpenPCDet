@@ -114,23 +114,36 @@ class RoIHeadTemplate(nn.Module):
     Returns:
         reg_valid_mask
     '''
+    # TODO (shashank) : 
+        # 1. add initial stage fixed threshold filtering - done
+        # 2. add warmup ? Inital scores are too low to cross inital stage fixed threshold filtering - done
+        # 3. Validate
     def _get_reg_valid_mask(self, roi_scores, roi_labels):
         thresh = self.model_cfg.REG_MASK_THRESH 
+
+        # Apply initial fixed threshold filtering to all roi_scores
+        fixed_thresh_mask = roi_scores > thresh
+        # Assign invalid (unused) class (0) wherever threshold wasn't crossed
+        roi_labels[~fixed_thresh_mask] = 0
+
+        # NOTE : order of num_gt_labels_per_class : {0-unused labels, 1-car, 2-pedestrian, 3-cyclist}
         num_gt_labels_per_class = torch.bincount(roi_labels.flatten().type(torch.int64), minlength=4)
+        # as per Flexmatch eq. 11 - uses warmup stage 
+        norm_factor = max(torch.max(num_gt_labels_per_class[1:]).item(), num_gt_labels_per_class[0].item())
+
         reg_valid_mask = torch.zeros_like(roi_scores, dtype=torch.bool)
-        
         for k in range(1, 4):  # TODO(shashank) 
             gt_label_mask = (roi_labels == k)
 
             # normalise the threshold based on number of obj detected per class
             # lowers the threshold if less samples are detected 
-            normalized_coef = num_gt_labels_per_class[k].item() / torch.max(num_gt_labels_per_class).item()
+            norm_est_learning_effect = num_gt_labels_per_class[k].item() / norm_factor
 
             # Base thresholds can be class agnostic or class wise
             # class_thresh  = thresh[k-1] if isinstance(thresh, list) else thresh
             
             # dynamic_cls_thresh = class_thresh * normalized_coef
-            dynamic_cls_thresh = thresh * normalized_coef
+            dynamic_cls_thresh = thresh * norm_est_learning_effect
             thresh_mask = (roi_scores > dynamic_cls_thresh)
 
             cur_mask = gt_label_mask & thresh_mask
