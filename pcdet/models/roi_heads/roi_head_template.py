@@ -417,7 +417,10 @@ class RoIHeadTemplate(nn.Module):
         return rcnn_loss_cls, tb_dict
 
     def pre_loss_filtering(self):
+        # Updates reg_valid_mask and rcnn_cls_labels for UL data based on Student's refined predictions
+        self.proposal_target_layer.sample_unlab_preds(self.forward_ret_dict)
 
+        # Second stage filtering on reg_valid_mask 
         unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
         rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
         rcnn_cls_scores = torch.sigmoid(self.forward_ret_dict['rcnn_cls'].clone().detach()).view_as(rcnn_cls_labels)

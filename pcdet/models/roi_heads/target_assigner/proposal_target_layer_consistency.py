@@ -34,6 +34,37 @@ class ProposalTargetLayerConsistency(nn.Module):
 
         return targets_dict
 
+    def sample_unlab_preds(self, forward_ret_dict):
+        unlabeled_inds = forward_ret_dict['unlabeled_inds']
+        
+        rcnn_reg_gt = forward_ret_dict['gt_of_rois'].clone().detach()
+        rcnn_reg = forward_ret_dict['rcnn_reg'].clone().detach().view_as(rcnn_reg_gt[...,:-1])
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].clone().detach()
+        rcnn_cls_scores = torch.sigmoid(forward_ret_dict['rcnn_cls'].clone().detach()).view_as(rcnn_cls_labels)
+
+        rcnn_reg_gt_unlabeled = rcnn_reg_gt[unlabeled_inds]
+        rcnn_cls_reg_unlabeled = rcnn_reg[unlabeled_inds]
+        rcnn_cls_labels_unlabeled = rcnn_cls_labels[unlabeled_inds]
+        rcnn_cls_scores_unlabeled = rcnn_cls_scores[unlabeled_inds]
+
+        # first stage filtering
+        for ul_index in unlabeled_inds:
+            subsample_unlabeled_preds = getattr(self, self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE)
+            sampled_inds, cur_reg_valid_mask, cur_cls_labels = subsample_unlabeled_preds(forward_ret_dict, ul_index)
+            
+            rcnn_cls_scores_unlabeled = rcnn_cls_scores_unlabeled[sampled_inds]
+            rcnn_cls_labels_unlabeled = rcnn_cls_labels_unlabeled[sampled_inds]
+            forward_ret_dict['reg_valid_mask'][ul_index] = cur_reg_valid_mask
+            forward_ret_dict['rcnn_cls_labels'][ul_index] = cur_cls_labels
+            
+
+        pred_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH', [0.9])
+        label_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_LABEL_FILTERING_THRESH', [0.9])
+        # TODO(farzad) make thresholds classwise
+        filtering_mask = (rcnn_cls_scores_unlabeled > pred_thresh[0]) & (rcnn_cls_labels_unlabeled > label_thresh[0])
+        self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] &= filtering_mask
+            
+
     def sample_rois_for_rcnn(self, batch_dict):
         """
         Args:
@@ -54,14 +85,25 @@ class ProposalTargetLayerConsistency(nn.Module):
         batch_size = batch_dict['batch_size']
         rois = batch_dict['rois']
         code_size = rois.shape[-1]
-        batch_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size)
-        batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
-        batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
-        batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        batch_gt_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
-        batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+
+        # batch_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size)
+        # batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+        # batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
+        # batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
+        # batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+        # batch_gt_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+        # batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
+        # batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+
+        num_rois_ema = batch_dict['rois_ema'][batch_dict['unlabeled_inds']].shape[1]
+        batch_rois = rois.new_zeros(batch_size, num_rois_ema, code_size)
+        batch_roi_scores = rois.new_zeros(batch_size, num_rois_ema)
+        batch_roi_labels = rois.new_zeros((batch_size, num_rois_ema), dtype=torch.long)
+        batch_gt_of_rois = rois.new_zeros(batch_size, num_rois_ema, code_size + 1)
+        batch_roi_ious = rois.new_zeros(batch_size, num_rois_ema)
+        batch_gt_scores = rois.new_zeros(batch_size, num_rois_ema)
+        batch_reg_valid_mask = rois.new_zeros((batch_size, num_rois_ema), dtype=torch.long)
+        batch_cls_labels = -rois.new_ones(batch_size, num_rois_ema)
 
         for index in range(batch_size):
             cur_gt_boxes = batch_dict['gt_boxes']
@@ -71,29 +113,48 @@ class ProposalTargetLayerConsistency(nn.Module):
             cur_gt_boxes = cur_gt_boxes[:k + 1]
             cur_gt_boxes = cur_gt_boxes.new_zeros((1, cur_gt_boxes.shape[1])) if len(cur_gt_boxes) == 0 else cur_gt_boxes
             if index in batch_dict['unlabeled_inds']:
-                subsample_unlabeled_rois = getattr(self, self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE)
-                sampled_inds, cur_reg_valid_mask, cur_cls_labels = subsample_unlabeled_rois(batch_dict, index)
+                # subsample_unlabeled_rois = getattr(self, self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE)
+                # sampled_inds, cur_reg_valid_mask, cur_cls_labels = subsample_unlabeled_rois(batch_dict, index)
 
-                cur_roi = batch_dict['rois_ema'][index][sampled_inds]
-                cur_roi_scores = batch_dict['roi_scores_ema'][index][sampled_inds]
-                cur_roi_labels = batch_dict['roi_labels_ema'][index][sampled_inds]
-                batch_gt_scores[index] = batch_dict['pred_scores_ema'][index][sampled_inds]
-                batch_gt_of_rois[index] = cur_gt_boxes[index][sampled_inds]
+                # cur_roi = batch_dict['rois_ema'][index][sampled_inds]
+                # cur_roi_scores = batch_dict['roi_scores_ema'][index][sampled_inds]
+                # cur_roi_labels = batch_dict['roi_labels_ema'][index][sampled_inds]
+                # batch_gt_scores[index] = batch_dict['pred_scores_ema'][index][sampled_inds]
+                # batch_gt_of_rois[index] = cur_gt_boxes[index][sampled_inds]
+
+                batch_rois[index] = batch_dict['rois_ema'][index]
+                batch_roi_labels[index] = batch_dict['roi_labels_ema'][index]
+                batch_roi_scores[index] = batch_dict['roi_scores_ema'][index]
+                batch_gt_scores[index] = batch_dict['pred_scores_ema'][index]
+                batch_gt_of_rois[index] = cur_gt_boxes[index]
+
+                # batch_reg_valid_mask[index] = cur_reg_valid_mask
+                # batch_cls_labels[index] = cur_cls_labels
+
             else:
                 sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment = self.subsample_labeled_rois(batch_dict, index)
 
                 cur_roi = batch_dict['rois'][index][sampled_inds]
                 cur_roi_scores = batch_dict['roi_scores'][index][sampled_inds]
                 cur_roi_labels = batch_dict['roi_labels'][index][sampled_inds]
-                batch_roi_ious[index] = roi_ious
-                batch_gt_of_rois[index] = cur_gt_boxes[index][gt_assignment[sampled_inds]]
+                # batch_roi_ious[index] = roi_ious
+                # batch_gt_of_rois[index] = cur_gt_boxes[index][gt_assignment[sampled_inds]]
 
-            batch_rois[index] = cur_roi
-            batch_roi_labels[index] = cur_roi_labels
-            batch_roi_scores[index] = cur_roi_scores
+                batch_roi_ious[index, :len(roi_ious)] = roi_ious
+                batch_gt_of_rois[index, :len(cur_gt_boxes[index][gt_assignment[sampled_inds]])] = cur_gt_boxes[index][gt_assignment[sampled_inds]]
 
-            batch_reg_valid_mask[index] = cur_reg_valid_mask
-            batch_cls_labels[index] = cur_cls_labels
+                batch_rois[index, :len(cur_roi)] = cur_roi
+                batch_roi_labels[index, :len(cur_roi_labels)] = cur_roi_labels
+                batch_roi_scores[index, :len(cur_roi_scores)] = cur_roi_scores
+                batch_reg_valid_mask[index, :len(cur_reg_valid_mask)] = cur_reg_valid_mask
+                batch_cls_labels[index, :len(cur_cls_labels)] = cur_cls_labels
+
+            # batch_rois[index] = cur_roi
+            # batch_roi_labels[index] = cur_roi_labels
+            # batch_roi_scores[index] = cur_roi_scores
+
+            # batch_reg_valid_mask[index] = cur_reg_valid_mask
+            # batch_cls_labels[index] = cur_cls_labels
 
         targets_dict = {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'roi_scores': batch_roi_scores,
                         'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
@@ -178,6 +239,36 @@ class ProposalTargetLayerConsistency(nn.Module):
         cls_labels[interval_mask] = sampled_gt_scores[interval_mask]
         # Ignoring all-zero pseudo-labels produced due to filtering
         ignore_mask = torch.eq(sampled_gt_boxes, 0).all(dim=-1)
+        cls_labels[ignore_mask] = -1
+
+        return sampled_inds, reg_valid_mask, cls_labels
+    
+    def rcnn_scores_sampler(self, forward_ret_dict, index):
+        # (mis?) using pseudo-label objectness scores as a proxy for iou!
+        rcnn_reg_gt = forward_ret_dict['gt_of_rois'].clone().detach()
+        rcnn_reg = forward_ret_dict['rcnn_reg'].clone().detach().view_as(rcnn_reg_gt[...,:-1])
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].clone().detach()
+        rcnn_cls_scores = torch.sigmoid(forward_ret_dict['rcnn_cls'].clone().detach()).view_as(rcnn_cls_labels)
+
+        rcnn_reg_gt_unlabeled = rcnn_reg_gt[index]
+        rcnn_cls_reg_unlabeled = rcnn_reg[index]
+        rcnn_cls_labels_unlabeled = rcnn_cls_labels[index]
+        rcnn_cls_scores_unlabeled = rcnn_cls_scores[index]
+        # TODO (shashank) : apply nms before subsampling ?
+        sampled_inds = self.subsample_rois(max_overlaps=rcnn_cls_scores_unlabeled)
+        sampled_cls_scores = rcnn_cls_scores_unlabeled[sampled_inds]
+        sampled_reg = rcnn_cls_reg_unlabeled[sampled_inds]
+        reg_valid_mask = (sampled_cls_scores > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+
+        iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+        iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
+        fg_mask = sampled_cls_scores > iou_fg_thresh
+        bg_mask = sampled_cls_scores < iou_bg_thresh
+        interval_mask = (fg_mask == 0) & (bg_mask == 0)
+        cls_labels = (fg_mask > 0).float()
+        cls_labels[interval_mask] = sampled_cls_scores[interval_mask]
+        # Ignoring all-zero pseudo-labels produced due to filtering
+        ignore_mask = torch.eq(sampled_reg, 0).all(dim=-1)
         cls_labels[ignore_mask] = -1
 
         return sampled_inds, reg_valid_mask, cls_labels
