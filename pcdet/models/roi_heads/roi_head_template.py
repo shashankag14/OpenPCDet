@@ -508,22 +508,25 @@ class RoIHeadTemplate(nn.Module):
 
         # ----------- REG_VALID_MASK -----------
         reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
-        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        # filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        # set reg_valid_mask if : IoU(student ROIs, PLs) > 0.55 or pred score of PL > 0.9
+        # trying to use the most confident boxes for unlabeled regression loss
+        filtering_mask = rcnn_cls_labels > reg_fg_thresh
         self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
 
-        # ----------- RCNN_CLS_LABELS -----------
-        fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.UNLABELED_CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
-        ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
-        rcnn_cls_labels[fg_mask] = 1
-        rcnn_cls_labels[bg_mask] = 0
-        rcnn_cls_labels[ignore_mask] = -1
-        self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
+        # # ----------- RCNN_CLS_LABELS -----------
+        # fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.UNLABELED_CLS_FG_THRESH
+        # bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+        # ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
+        # rcnn_cls_labels[fg_mask] = 1
+        # rcnn_cls_labels[bg_mask] = 0
+        # rcnn_cls_labels[ignore_mask] = -1
+        # self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
 
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
 
-        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY or self.model_cfg.ENABLE_SOFT_TEACHER:
             self.pre_loss_filtering()
 
         if self.model_cfg.get("ENABLE_EVAL", None):
