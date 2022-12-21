@@ -439,8 +439,8 @@ class RoIHeadTemplate(nn.Module):
                 cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
                 if 'rcnn_cls_weights' in forward_ret_dict:
                     rcnn_cls_weights = forward_ret_dict['rcnn_cls_weights']
-                    rcnn_loss_cls_norm = rcnn_cls_weights[cls_valid_mask.bool()].view_as(cls_valid_mask).sum(1)
-                    rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm.cuda(), min=1.0)
+                    rcnn_loss_cls_norm = (cls_valid_mask * rcnn_cls_weights).sum(-1)
+                    rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm, min=1.0)
                 else:
                     rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
                 rcnn_acc_cls = torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels).reshape(batch_size, -1)
@@ -507,12 +507,14 @@ class RoIHeadTemplate(nn.Module):
                 unlabeled_rcnn_cls_weights[unlbl_bg_mask] = rcnn_bg_score_teacher[unlabeled_inds][unlbl_bg_mask]
             elif self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'ignore_interval':  # Naive baseline
                 unlabeled_rcnn_cls_weights[ul_interval_mask] = 0
+            elif self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'full-ema':
+                unlabeled_rcnn_cls_weights = rcnn_bg_score_teacher[unlabeled_inds]
             else:
                 raise ValueError
 
             self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds] = unlabeled_rcnn_cls_weights
         else:
-            raise NotImplementedError
+            print("No pre_loss_filtering! (Baseline Mode)")
 
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
