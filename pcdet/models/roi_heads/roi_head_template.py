@@ -489,11 +489,23 @@ class RoIHeadTemplate(nn.Module):
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
 
         elif self.model_cfg.ENABLE_SOFT_TEACHER:
+            # ----------- REG_VALID_MASK -----------
+            # This idea is based on Humble Teacher to use the instance level reg consistency based on confidence scores of teacher and student
+            unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
+            rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels']
+            rcnn_cls_score_teacher = self.forward_ret_dict['rcnn_cls_score_teacher'].view_as(rcnn_cls_labels)[unlabeled_inds].clone().detach()
+            rcnn_cls_score_student = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
+            rcnn_cls_score_student = torch.sigmoid(rcnn_cls_score_student)[unlabeled_inds]
+            
+            reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
+            filtering_mask = (rcnn_cls_score_student > reg_fg_thresh) & (rcnn_cls_score_teacher > reg_fg_thresh)
+            self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
+
+            # ----------- RCNN_CLS_LABELS -----------
             # The soft-teacher is similar to the other methods as it defines the rcnn_cls_labels or its "weights."
             # Note that it only defines the weights for unlabeled samples. All labeled samples receive one as weight.
 
             rcnn_bg_score_teacher = 1 - self.forward_ret_dict['rcnn_cls_score_teacher']  # represents the bg score
-            unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
             self.forward_ret_dict['rcnn_cls_weights'] = torch.ones_like(self.forward_ret_dict['rcnn_cls_labels'])
             unlabeled_rcnn_cls_weights = self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds]
             ul_interval_mask = self.forward_ret_dict['interval_mask'][unlabeled_inds]
