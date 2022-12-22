@@ -336,6 +336,8 @@ class RoIHeadTemplate(nn.Module):
         rcnn_reg = forward_ret_dict['rcnn_reg']  # (rcnn_batch_size, C)
         roi_boxes3d = forward_ret_dict['rois']
         rcnn_batch_size = gt_boxes3d_ct.view(-1, code_size).shape[0]
+        batch_reg_loss_weights = forward_ret_dict['reg_loss_weights']
+        reg_loss_weights = batch_reg_loss_weights.view(-1)
 
         if 'gt_of_rois_var' in forward_ret_dict.keys() and loss_cfgs.get('USE_BOX_REG_VAR', False):
             gt_of_rois_var = forward_ret_dict['gt_of_rois_var'][..., 0:code_size]
@@ -348,6 +350,12 @@ class RoIHeadTemplate(nn.Module):
 
         fg_mask = (reg_valid_mask > 0)
         fg_sum = fg_mask.long().sum().item()
+        fg_reg_loss_weights = reg_loss_weights[fg_mask] # for corner loss
+
+        # TODO (shashank) : Check if this scaling is required. It is increasing the unlabeled loss !
+        batch_fg_reg_loss_weights = batch_reg_loss_weights * fg_mask.reshape(batch_size, -1)
+        reg_scale_factor = batch_fg_reg_loss_weights.sum(-1) / batch_fg_reg_loss_weights.pow(2.0).sum(-1) 
+        reg_scale_factor = reg_scale_factor.nan_to_num(1)
         # if scalar:
         #     fg_sum = fg_mask.long().sum().item()
         # else:
@@ -368,14 +376,16 @@ class RoIHeadTemplate(nn.Module):
                 reg_targets.unsqueeze(dim=0),
             )  # [B, M, 7]
             if scalar:
-                rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float()).sum() \
-                                / max(fg_sum, 1)
+                rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float() * \
+                                reg_loss_weights.unsqueeze(dim=-1).float()).sum() / max(fg_sum, 1)
             else:
                 fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
                 rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) *
-                                 fg_mask.unsqueeze(dim=-1).float() *
+                                 fg_mask.unsqueeze(dim=-1).float() * reg_loss_weights.unsqueeze(dim=-1).float() *
                                  (1 / box_var)).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
             rcnn_loss_reg = rcnn_loss_reg * loss_cfgs.LOSS_WEIGHTS['rcnn_reg_weight']
+            if self.model_cfg.LOSS_CONFIG.USE_REG_SCALE_FACTOR:
+                rcnn_loss_reg = rcnn_loss_reg * reg_scale_factor
             tb_dict['rcnn_loss_reg'] = rcnn_loss_reg.item() if scalar else rcnn_loss_reg
 
             if loss_cfgs.CORNER_LOSS_REGULARIZATION and fg_sum > 0:
@@ -405,6 +415,7 @@ class RoIHeadTemplate(nn.Module):
                     rcnn_boxes3d[:, 0:7],
                     gt_of_rois_src[fg_mask][:, 0:7]
                 )
+                loss_corner = loss_corner * fg_reg_loss_weights
                 if scalar:
                     loss_corner = loss_corner.mean()
                 else:
@@ -413,6 +424,8 @@ class RoIHeadTemplate(nn.Module):
                     loss_corner = [x.mean(dim=0, keepdim=True) if len(x) > 0 else zero for x in loss_corner]
                     loss_corner = torch.cat(loss_corner, dim=0)
                 loss_corner = loss_corner * loss_cfgs.LOSS_WEIGHTS['rcnn_corner_weight']
+                if self.model_cfg.LOSS_CONFIG.USE_REG_SCALE_FACTOR:
+                    loss_corner = loss_corner * reg_scale_factor
 
                 rcnn_loss_reg += loss_corner
                 tb_dict['rcnn_loss_corner'] = loss_corner.item() if scalar else loss_corner
@@ -492,14 +505,15 @@ class RoIHeadTemplate(nn.Module):
             # ----------- REG_VALID_MASK -----------
             # This idea is based on Humble Teacher to use the instance level reg consistency based on confidence scores of teacher and student
             unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
-            rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels']
-            rcnn_cls_score_teacher = self.forward_ret_dict['rcnn_cls_score_teacher'].view_as(rcnn_cls_labels)[unlabeled_inds].clone().detach()
-            rcnn_cls_score_student = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
-            rcnn_cls_score_student = torch.sigmoid(rcnn_cls_score_student)[unlabeled_inds]
-            
-            reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
-            filtering_mask = (rcnn_cls_score_student > reg_fg_thresh) & (rcnn_cls_score_teacher > reg_fg_thresh)
-            self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
+            if 'reg_loss_weights' not in self.forward_ret_dict:
+                rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels']
+                rcnn_cls_score_teacher = self.forward_ret_dict['rcnn_cls_score_teacher'].view_as(rcnn_cls_labels)[unlabeled_inds].clone().detach()
+                rcnn_cls_score_student = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
+                rcnn_cls_score_student = torch.sigmoid(rcnn_cls_score_student)[unlabeled_inds]
+                
+                reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
+                filtering_mask = (rcnn_cls_score_student > reg_fg_thresh) & (rcnn_cls_score_teacher > reg_fg_thresh)
+                self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
 
             # ----------- RCNN_CLS_LABELS -----------
             # The soft-teacher is similar to the other methods as it defines the rcnn_cls_labels or its "weights."
