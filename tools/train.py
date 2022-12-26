@@ -214,10 +214,17 @@ def main():
         test_loader_during_train = test_loader
     else:
         test_loader_during_train = None
+
+    # GT Sampler for unlabeled data, keeping self.training True but later in pvrcnnssl it would be set False 
+    pl_dir = output_dir / 'pseudo_labels'
+    pl_dir.mkdir(parents=True, exist_ok=True)
+    cfg.MODEL.UL_GT_SAMPLER['PL_DIR'] = pl_dir
+    
     train_model(
         model,
         optimizer,
         train_loader,
+        ul_gt_sampler_cfg = cfg.MODEL.UL_GT_SAMPLER,
         test_loader=test_loader_during_train,
         model_func=model_fn_decorator(),
         lr_scheduler=lr_scheduler,

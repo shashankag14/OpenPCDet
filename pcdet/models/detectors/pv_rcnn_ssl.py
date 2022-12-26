@@ -149,7 +149,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.metric_registry = MetricRegistry(dataset=self.dataset, cls_bg_thresh=cls_bg_thresh)
 
     def forward(self, batch_dict):
-        if self.training:
+        if self.training and ('run_ul_gt_sampler' not in batch_dict.keys()):
             labeled_mask = batch_dict['labeled_mask'].view(-1)
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
             unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
@@ -415,6 +415,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             return ret_dict, tb_dict_, disp_dict
 
         else:
+            # TODO (shashank): Refactor later, Setting it explicitly for ul_gt_sampler
+            # It wont affect the performance
+            self.training = False
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
 
@@ -428,7 +431,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                              'pred_scores': pseudo_scores,
                              'ground_truths': gt_boxes}
 
-            self.metric_registry.get('test').update(**metric_inputs)
+            if 'run_ul_gt_sampler' not in batch_dict.keys():
+                self.metric_registry.get('test').update(**metric_inputs)
 
             return pred_dicts, recall_dicts, {}
 

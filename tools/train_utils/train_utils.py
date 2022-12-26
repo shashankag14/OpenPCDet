@@ -8,6 +8,7 @@ from torch.nn.utils import clip_grad_norm_
 from pcdet.utils import common_utils, commu_utils
 from matplotlib import pyplot as plt
 from pcdet.models import load_data_to_gpu
+from pcdet.utils.gt_sampling_utils import save_pseudo_label_epoch
 
 def log_tb_dict(tb_log, tb_dict, accumulated_iter):
     for key, val in tb_dict.items():
@@ -121,7 +122,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
-                merge_all_iters_to_one_epoch=False, test_loader=None):
+                merge_all_iters_to_one_epoch=False, test_loader=None, ul_gt_sampler_cfg=None):
     accumulated_iter = start_iter
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(train_loader)
@@ -141,6 +142,18 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 cur_scheduler = lr_warmup_scheduler
             else:
                 cur_scheduler = lr_scheduler
+
+            # TODO (shashank) : Uncomment the if statement check for cur_epoch once tested and debugged
+            #update pseudo label for the previous epoch
+            if ul_gt_sampler_cfg.get('ENABLE', False):
+                if ((cur_epoch % ul_gt_sampler_cfg.UPDATE_PSEUDO_LABEL_INTERVAL == 0)):
+                        #and cur_epoch != 0):
+                    # ul_gt_sample_loader.dataset.eval()
+                    save_pseudo_label_epoch(
+                        model=model, data_loader=train_loader, rank=rank,
+                        leave_pbar=True, cur_epoch=cur_epoch, ul_gt_sampler_cfg=ul_gt_sampler_cfg
+                    )
+
             accumulated_iter = train_one_epoch(
                 model, optimizer, train_loader, model_func,
                 lr_scheduler=cur_scheduler,
