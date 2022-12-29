@@ -97,6 +97,27 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
+# Wrapper method for ROS on GTs/ROIs. 
+# NOTE : It uses scale_pre_bbox and doesnt manipulates the points (unlike in scale_pre_objects)
+def _random_object_scaling(batch_dict, unlabeled_inds, key):
+    # If scale factors already present, it means forward/reversal of aug has already been performed once and now we need to revert it back
+    # so, we can should use the stored scale factors and then remove it from the dict
+    if 'scale_ros' in batch_dict.keys():
+        if isinstance(batch_dict['scale_ros'], np.ndarray):
+            batch_dict['scale_ros'] = torch.from_numpy(batch_dict['scale_ros']).cuda()
+        scale_factor = 1 / batch_dict['scale_ros'][unlabeled_inds] 
+        batch_dict[key][unlabeled_inds] = batch_dict[key][unlabeled_inds] * scale_factor.to(torch.float32)
+        batch_dict.pop('scale_ros')
+    else:
+        scale_factor = None
+        batch_dict['scale_ros'] = np.ones((batch_dict[key].shape[0], batch_dict[key].shape[1], 1))
+        for ul_idx in unlabeled_inds:
+            cur_boxes = batch_dict[key][ul_idx]
+            boxes_mask = ~(torch.eq(cur_boxes, 0).all(dim=-1))
+            batch_dict[key][ul_idx][...,:7], batch_dict['scale_ros'][ul_idx] = scale_pre_bbox(batch_dict[key][ul_idx][...,:7].squeeze(0), \
+                                                                        boxes_mask, [ 0.95, 1.05 ])
+    return batch_dict[key][unlabeled_inds]
+
 # TODO(farzad) refactor this with global registry, accessible in different places, not via passing through batch_dict
 class MetricRegistry(object):
     def __init__(self, **kwargs):
@@ -631,6 +652,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict[key] = new_boxes
 
     def apply_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key='rois'):
+        batch_dict[key][unlabeled_inds] = _random_object_scaling(
+            batch_dict, unlabeled_inds, key)
         batch_dict[key][unlabeled_inds] = random_flip_along_x_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_y_bbox(
@@ -655,6 +678,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_x_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
+        batch_dict[key][unlabeled_inds] = _random_object_scaling(
+            batch_dict, unlabeled_inds, key)
 
         batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
             batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi

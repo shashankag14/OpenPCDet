@@ -1,5 +1,5 @@
 from functools import partial
-
+import torch
 import numpy as np
 
 from ...utils import common_utils
@@ -261,18 +261,27 @@ class DataAugmentor(object):
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
         return data_dict
-
+   
+    # NOTE (shashank) : This aug is local to boxes and removes BG points in case the box is scaled up 
     def random_object_scaling(self, data_dict=None, config=None):
         if data_dict is None:
             return partial(self.random_object_scaling, config=config)
-        points, gt_boxes = augmentor_utils.scale_pre_object(
+        
+        # Since this aug works post gt sampling, gt_boxes_mask would always be 1
+        gt_boxes_mask = torch.ones(data_dict['gt_boxes'].shape[0], dtype=torch.bool) \
+            if 'gt_boxes_mask' not in data_dict else data_dict['gt_boxes_mask']
+        
+        gt_boxes, points, scale_noises = augmentor_utils.scale_pre_object(
             data_dict['gt_boxes'], data_dict['points'],
-            gt_boxes_mask=data_dict['gt_boxes_mask'],
+            gt_boxes_mask=gt_boxes_mask,
             scale_perturb=config['SCALE_UNIFORM_NOISE']
         )
 
+        # NOTE (shashank) : Need to save pre-ros points for teacher's model as its using the original data currently
+        data_dict['pre_ros_points'] = data_dict['points']
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
+        data_dict['scale_ros'] = scale_noises
         return data_dict
 
 

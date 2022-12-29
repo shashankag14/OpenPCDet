@@ -538,6 +538,17 @@ class KittiDatasetSSL(DatasetTemplate):
 
             gt_boxes_ema, points_ema, _ = random_flip_along_x(gt_boxes_ema, points_ema, enable_=data_dict['flip_x'])
             gt_boxes_ema, points_ema, _ = random_flip_along_y(gt_boxes_ema, points_ema, enable_=data_dict['flip_y'])
+
+            gt_boxes_ema[..., 3:6] = gt_boxes_ema[..., 3:6] * (1 / data_dict['scale_ros'])
+            points_ema = data_dict['pre_ros_points']
+            data_dict.pop('scale_ros')
+            data_dict.pop('pre_ros_points')
+
+            # TODO (Shashank) : Shall we include this ?
+            # gt_boxes_ema[..., 6] = common_utils.limit_period(
+            #             gt_boxes_ema[..., 6], offset=0.5, period=2 * np.pi
+            #             )
+
             # Store this for original dataset for teacher ensemble
             data_dict['points_ema'] = points_ema
             data_dict['gt_boxes_ema'] = gt_boxes_ema
