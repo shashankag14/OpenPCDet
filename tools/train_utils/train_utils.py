@@ -148,10 +148,9 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
             if ul_gt_sampler_cfg.get('ENABLE', False):
                 if ((cur_epoch % ul_gt_sampler_cfg.UPDATE_PSEUDO_LABEL_INTERVAL == 0)):
                         #and cur_epoch != 0):
-                    # ul_gt_sample_loader.dataset.eval()
                     save_pseudo_label_epoch(
                         model=model, data_loader=train_loader, rank=rank,
-                        leave_pbar=True, cur_epoch=cur_epoch, ul_gt_sampler_cfg=ul_gt_sampler_cfg
+                        leave_pbar=True, cur_epoch=cur_epoch
                     )
 
             accumulated_iter = train_one_epoch(
