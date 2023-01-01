@@ -6,6 +6,8 @@ import numpy as np
 import SharedArray
 import torch.distributed as dist
 
+from pathlib import Path
+from pcdet.config import cfg
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils import box_utils, common_utils
 
@@ -40,7 +42,9 @@ class DataBaseSampler(object):
         self.sample_groups = {}
         self.sample_class_num = {}
         self.limit_whole_scene = sampler_cfg.get('LIMIT_WHOLE_SCENE', False)
-
+        
+        self.labeled_pointers = {}
+        self.labeled_indices = {}
         for x in sampler_cfg.SAMPLE_GROUPS:
             class_name, sample_num = x.split(':')
             if class_name not in class_names:
@@ -51,6 +55,8 @@ class DataBaseSampler(object):
                 'pointer': len(self.db_infos[class_name]),
                 'indices': np.arange(len(self.db_infos[class_name]))
             }
+            self.labeled_pointers[class_name] = len(self.db_infos[class_name])
+            self.labeled_indices[class_name] = np.arange(len(self.db_infos[class_name]))
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -207,6 +213,26 @@ class DataBaseSampler(object):
         data_dict['gt_names'] = gt_names
         data_dict['points'] = points
         return data_dict
+    
+    # Merge unlabeled GTs into DB infos
+    def merge_dbinfos(self, ul_gt_db_infos):
+        # Reset db infos i.e. remove prev epoch's PL infos from db infos and then marge the new PL infos
+        for class_name in self.class_names:
+            if len(self.db_infos[class_name]) != self.labeled_pointers[class_name]:
+                self.db_infos[class_name] = self.db_infos[class_name][:self.labeled_pointers[class_name]]
+                self.sample_groups[class_name]['pointer'] = self.labeled_pointers[class_name]
+                self.sample_groups[class_name]['indices'] = self.labeled_indices[class_name]
+
+        with open(str(ul_gt_db_infos), 'rb') as f:
+            infos = pickle.load(f)
+            [self.db_infos[cur_class].extend(infos[cur_class]) for cur_class in self.class_names]
+
+        for x in self.sampler_cfg.SAMPLE_GROUPS:
+            class_name, _ = x.split(':')
+            if class_name not in self.class_names:
+                continue
+            self.sample_groups[class_name]['pointer'] = len(self.db_infos[class_name])
+            self.sample_groups[class_name]['indices'] = np.arange(len(self.db_infos[class_name])) 
 
     def __call__(self, data_dict, no_db_sample=False):
         """
@@ -217,6 +243,11 @@ class DataBaseSampler(object):
         Returns:
 
         """
+        ul_gt_db_infos = Path(cfg.MODEL.UL_GT_SAMPLER['PL_DIR']) / 'ps_dbinfos.pkl'
+        # Avoid merging when running model for generating and saving PLs, thus used Path(ul_gt_db_infos).exists()
+        if cfg.MODEL.UL_GT_SAMPLER.ENABLE and Path(ul_gt_db_infos).exists():
+            self.merge_dbinfos(ul_gt_db_infos)
+
         gt_boxes = data_dict['gt_boxes']
         gt_names = data_dict['gt_names'].astype(str)
         existed_boxes = gt_boxes

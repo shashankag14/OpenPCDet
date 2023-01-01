@@ -30,6 +30,9 @@ def save_pseudo_label_epoch(model, data_loader, rank, leave_pbar, cur_epoch):
         ul_gt_sampler_cfg : config for unlabeled GT Sampler
     """
     pl_dir = cfg.MODEL.UL_GT_SAMPLER['PL_DIR']
+    # Clear prev epoch's db infos and database
+    if (Path(pl_dir) / 'ps_dbinfos.pkl').exists():
+        os.remove(Path(pl_dir) / 'ps_dbinfos.pkl')
     if (Path(pl_dir) / 'pl_database').exists():
         shutil.rmtree(Path(pl_dir) / 'pl_database')
 
@@ -97,7 +100,8 @@ def save_pseudo_label_batch(batch_dict, pred_dicts=None):
             pseudo_boxes = pred_dicts[b_idx]['pred_boxes']
             pseudo_labels = pred_dicts[b_idx]['pred_labels']
 
-            # filter preds based on objectness scores
+            # filter preds based on objectness scores 
+            # TODO : Set high thresholds to extract most confident PLs only ?
             conf_thresh = torch.tensor(cfg.MODEL.UL_GT_SAMPLER.THRESH, device=pseudo_labels.device).unsqueeze(
                                 0).repeat(len(pseudo_labels), 1).gather(dim=1, index=(pseudo_labels - 1).unsqueeze(-1))
             valid_inds = pseudo_scores > conf_thresh.squeeze()
@@ -113,10 +117,6 @@ def save_pseudo_label_batch(batch_dict, pred_dicts=None):
                 
                 create_pl_database(gt_boxes, batch_dict['frame_id'][b_idx])
                 box_meter.update(gt_boxes.shape[0])    
-    
-    # for k, v in NEW_PSEUDO_LABELS_DICT.items():
-    #     print('Database %s: %d' % (k, len(v)))
-
     return box_meter.sum
 
 def gather_and_dump_pseudo_label_result(rank, cur_epoch):
@@ -128,9 +128,23 @@ def gather_and_dump_pseudo_label_result(rank, cur_epoch):
             new_pseudo_label_dict.update(pseudo_labels)
         NEW_PSEUDO_LABELS_DICT.update(new_pseudo_label_dict)
 
+    # Filter infos by min points 
+    filtered_infos = []
+    for name_num in cfg.DATA_CONFIG.DATA_AUGMENTOR.AUG_CONFIG_LIST[0].PREPARE['filter_by_min_points']:
+        name, min_num = name_num.split(':')
+        min_num = int(min_num)
+        if min_num > 0 and name in cfg.CLASS_NAMES:
+            filtered_infos = []
+            for info in NEW_PSEUDO_LABELS_DICT[name]:
+                if info['num_points_in_gt'] >= min_num:
+                    filtered_infos.append(info)
+            print('PL Database filter by min points %s: %d => %d' %
+                                (name, len(NEW_PSEUDO_LABELS_DICT[name]), len(filtered_infos)))
+            NEW_PSEUDO_LABELS_DICT[name] = filtered_infos
+
     # dump new pseudo label to given dir
     if rank == 0:
-        ps_path = os.path.join(cfg.MODEL.UL_GT_SAMPLER['PL_DIR'], "ps_label_e{}.pkl".format(cur_epoch))
+        ps_path = os.path.join(cfg.MODEL.UL_GT_SAMPLER['PL_DIR'], "ps_dbinfos.pkl".format(cur_epoch))
         with open(ps_path, 'wb') as f:
             pkl.dump(NEW_PSEUDO_LABELS_DICT, f)
 
@@ -168,10 +182,9 @@ def create_pl_database(gt_boxes, frame_id):
         with open(filepath, 'w') as f:
             gt_points.tofile(f)
 
-        db_path = str(filepath.relative_to(cfg.MODEL.UL_GT_SAMPLER['PL_DIR']))  # gt_database/xxxxx.bin
-        db_info = {'name': cls_name, 'path': db_path, 'image_idx': frame_id, 'gt_idx': gt_idx,
-                    'box3d_lidar': gt_boxes[gt_idx], 'num_points_in_gt': gt_points.shape[0],
-                    'difficulty': -1, 'bbox': bbox, 'score': score}
+        db_info = {'name': cls_name, 'path': str(filepath), 'image_idx': frame_id, 'gt_idx': gt_idx,
+                    'box3d_lidar': gt_boxes[gt_idx][:7], 'num_points_in_gt': gt_points.shape[0],
+                    'difficulty': 1, 'bbox': bbox, 'score': score}
         
         if cls_name in NEW_PSEUDO_LABELS_DICT:
             NEW_PSEUDO_LABELS_DICT[cls_name].append(db_info)
