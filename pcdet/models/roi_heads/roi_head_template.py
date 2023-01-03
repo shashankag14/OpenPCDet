@@ -489,17 +489,50 @@ class RoIHeadTemplate(nn.Module):
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
 
         elif self.model_cfg.ENABLE_SOFT_TEACHER:
-            # ----------- REG_VALID_MASK -----------
-            # This idea is based on Humble Teacher to use the instance level reg consistency based on confidence scores of teacher and student
             unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
-            rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels']
-            rcnn_cls_score_teacher = self.forward_ret_dict['rcnn_cls_score_teacher'].view_as(rcnn_cls_labels)[unlabeled_inds].clone().detach()
-            rcnn_cls_score_student = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
-            rcnn_cls_score_student = torch.sigmoid(rcnn_cls_score_student)[unlabeled_inds]
-            
-            reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
-            filtering_mask = (rcnn_cls_score_student > reg_fg_thresh) & (rcnn_cls_score_teacher > reg_fg_thresh)
-            self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
+            # TODO (shashank) : Refactor later if this works
+            if self.model_cfg.TARGET_CONFIG.UNLABELED_SAMPLER_TYPE == 'consistency_based_reg':
+                # ----------- REG_VALID_MASK -----------
+                # Below code has been adapted from assign_targets() and only working on unlabeled data to use
+                #   refined boxes from teacher based on student's ROIs. For labeled data these operations have 
+                #   already been performed in assign_targets()
+                rois = self.forward_ret_dict['rois'][unlabeled_inds]  # (B, N, 7 + C)
+                # NOTE : Adding another column for labels to avoid shape mismatch. Wont be used in reg loss computation
+                labels = -1 * (torch.ones_like(self.forward_ret_dict['roi_labels']).unsqueeze(-1))
+                gt_of_rois = torch.cat((self.forward_ret_dict['batch_box_preds_teacher'][unlabeled_inds], labels[unlabeled_inds]), dim=-1)
+                self.forward_ret_dict['gt_of_rois_src'][unlabeled_inds] = gt_of_rois.clone().detach()
+
+                # canonical transformation
+                roi_center = rois[:, :, 0:3]
+                roi_ry = rois[:, :, 6] % (2 * np.pi)
+                gt_of_rois[:, :, 0:3] = gt_of_rois[:, :, 0:3] - roi_center
+                gt_of_rois[:, :, 6] = gt_of_rois[:, :, 6] - roi_ry
+
+                # transfer LiDAR coords to local coords
+                gt_of_rois = common_utils.rotate_points_along_z(
+                    points=gt_of_rois.view(-1, 1, gt_of_rois.shape[-1]), angle=-roi_ry.view(-1)
+                ).view(unlabeled_inds.shape[0], -1, gt_of_rois.shape[-1])
+
+                # flip orientation if rois have opposite orientation
+                heading_label = gt_of_rois[:, :, 6] % (2 * np.pi)  # 0 ~ 2pi
+                opposite_flag = (heading_label > np.pi * 0.5) & (heading_label < np.pi * 1.5)
+                heading_label[opposite_flag] = (heading_label[opposite_flag] + np.pi) % (2 * np.pi)  # (0 ~ pi/2, 3pi/2 ~ 2pi)
+                flag = heading_label > np.pi
+                heading_label[flag] = heading_label[flag] - np.pi * 2  # (-pi/2, pi/2)
+                heading_label = torch.clamp(heading_label, min=-np.pi / 2, max=np.pi / 2)
+
+                gt_of_rois[:, :, 6] = heading_label
+                self.forward_ret_dict['gt_of_rois'][unlabeled_inds] = gt_of_rois
+
+                # This idea is based on Humble Teacher to use the instance level reg consistency based on confidence scores of teacher and student
+                rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels']
+                rcnn_cls_score_teacher = self.forward_ret_dict['rcnn_cls_score_teacher'].view_as(rcnn_cls_labels)[unlabeled_inds].clone().detach()
+                rcnn_cls_score_student = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
+                rcnn_cls_score_student = torch.sigmoid(rcnn_cls_score_student)[unlabeled_inds]
+
+                reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
+                filtering_mask = (rcnn_cls_score_student > reg_fg_thresh) & (rcnn_cls_score_teacher > reg_fg_thresh)
+                self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
 
             # ----------- RCNN_CLS_LABELS -----------
             # The soft-teacher is similar to the other methods as it defines the rcnn_cls_labels or its "weights."
