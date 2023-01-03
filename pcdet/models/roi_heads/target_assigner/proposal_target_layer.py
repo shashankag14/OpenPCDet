@@ -29,12 +29,11 @@ class ProposalTargetLayer(nn.Module):
                 reg_valid_mask: (B, M)
                 rcnn_cls_labels: (B, M)
         """
-        batch_rois, batch_gt_of_rois, batch_roi_ious, batch_roi_scores, batch_roi_labels, batch_reg_loss_weights \
-            = self.sample_rois_for_rcnn(batch_dict=batch_dict
+        batch_rois, batch_gt_of_rois, batch_roi_ious, batch_roi_scores, batch_roi_labels = self.sample_rois_for_rcnn(
+            batch_dict=batch_dict
         )
         # regression valid mask
-        # reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
-        reg_valid_mask = torch.ones_like(batch_roi_ious).long()
+        reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
         interval_mask = None
         # classification label
         if self.roi_sampler_cfg.CLS_SCORE_TYPE == 'cls':
@@ -61,8 +60,7 @@ class ProposalTargetLayer(nn.Module):
                         'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
                         'reg_valid_mask': reg_valid_mask,
                         'rcnn_cls_labels': batch_cls_labels,
-                        'interval_mask': interval_mask,
-                        'reg_loss_weights': batch_reg_loss_weights}
+                        'interval_mask': interval_mask}
 
         return targets_dict
 
@@ -90,7 +88,6 @@ class ProposalTargetLayer(nn.Module):
         batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
-        batch_reg_loss_weights = rois.new_ones((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE))
 
         for index in range(batch_size):
             cur_roi, cur_gt, cur_roi_labels, cur_roi_scores = \
@@ -117,20 +114,8 @@ class ProposalTargetLayer(nn.Module):
             batch_roi_ious[index] = max_overlaps[sampled_inds]
             batch_roi_scores[index] = cur_roi_scores[sampled_inds]
             batch_gt_of_rois[index] = cur_gt[gt_assignment[sampled_inds]]
-            
-            # PseCo based Positive Proposal Consistency Voting (PCV) to compute regression weights for each proposal
-            if index in batch_dict['unlabeled_inds']:
-                cur_reg_loss_weights = torch.ones(cur_roi[sampled_inds].shape[0]).cuda()
-                gt_inds_set = torch.unique(gt_assignment[sampled_inds])
-                for gt_index in gt_inds_set:
-                    idx_per_gt = (gt_assignment[sampled_inds] == gt_index).nonzero().reshape(-1)
-                    if idx_per_gt.shape[0] > 0:
-                        cur_reg_loss_weights[idx_per_gt] = max_overlaps[sampled_inds][idx_per_gt].mean()
-                    else:
-                        cur_reg_loss_weights[idx_per_gt] = 0
-                batch_reg_loss_weights[index] = cur_reg_loss_weights
 
-        return batch_rois, batch_gt_of_rois, batch_roi_ious, batch_roi_scores, batch_roi_labels, batch_reg_loss_weights
+        return batch_rois, batch_gt_of_rois, batch_roi_ious, batch_roi_scores, batch_roi_labels
 
     def subsample_rois(self, max_overlaps):
         # sample fg, easy_bg, hard_bg
