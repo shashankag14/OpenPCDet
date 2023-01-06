@@ -209,6 +209,9 @@ MODEL:
             UNLABELED_REG_FG_THRESH: 0.9
             UNLABELED_SAMPLER_TYPE: None
 
+            CLASS_FG_THRESH: [0.6, 0.4, 0.4]
+            CLASS_BG_THRESH: [0.25, 0, 0]
+
         LOSS_CONFIG:
             UL_RCNN_CLS_WEIGHT_TYPE: 'interval-only' # two options: `all` or `interval-only`
             USE_BOX_REG_VAR: False
