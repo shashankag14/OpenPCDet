@@ -496,36 +496,19 @@ class RoIHeadTemplate(nn.Module):
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
 
         elif self.model_cfg.ENABLE_SOFT_TEACHER:
-            # Overwrite rcnn_cls_labels for unlabeled data with low classwise thresholds for ious
-            unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
-            roi_labels = self.forward_ret_dict['roi_labels'][unlabeled_inds]
-            gt_iou_of_rois = self.forward_ret_dict['gt_iou_of_rois'][unlabeled_inds]
-            gt_of_rois = self.forward_ret_dict['gt_of_rois'][unlabeled_inds]
-            
-            fg_thresh = self.model_cfg.TARGET_CONFIG.get('CLASS_FG_THRESH', [0.7, 0.5, 0.5])
-            bg_thresh =self.model_cfg.TARGET_CONFIG.get('CLASS_BG_THRESH', [0.25, 0, 0]) 
-            iou_fg_thresh = torch.tensor(fg_thresh, device=roi_labels.device).unsqueeze(
-                            0).repeat(roi_labels.shape[-1], 1).gather(dim=1, index=(roi_labels - 1))
-            iou_bg_thresh = bg_thresh[0]
-
-            fg_mask = gt_iou_of_rois > iou_fg_thresh
-            bg_mask = gt_iou_of_rois < iou_bg_thresh
-
-            interval_mask = (fg_mask == 0) & (bg_mask == 0)
-            rcnn_cls_labels = (fg_mask > 0).float()
-            rcnn_cls_labels[interval_mask] = \
-                (gt_iou_of_rois[interval_mask] - iou_bg_thresh) / (iou_fg_thresh[interval_mask] - iou_bg_thresh)
-            # Ignoring all-zero pseudo-labels produced due to filtering
-            ignore_mask = torch.eq(gt_of_rois, 0).all(dim=-1)
-            rcnn_cls_labels[ignore_mask] = -1
-            self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
-
             # The soft-teacher is similar to the other methods as it defines the rcnn_cls_labels or its "weights."
             # Note that it only defines the weights for unlabeled samples. All labeled samples receive one as weight.
 
             rcnn_bg_score_teacher = 1 - self.forward_ret_dict['rcnn_cls_score_teacher']  # represents the bg score
+            unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
             self.forward_ret_dict['rcnn_cls_weights'] = torch.ones_like(self.forward_ret_dict['rcnn_cls_labels'])
             unlabeled_rcnn_cls_weights = self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds]
+            interval_mask = self.forward_ret_dict['interval_mask']
+            # Assign hard label for all BGs, even those in interval mask 
+            for ul_idx in unlabeled_inds:
+                mask = interval_mask[ul_idx]
+                self.forward_ret_dict['rcnn_cls_labels'][ul_idx][mask] = 0
+                
             ul_interval_mask = self.forward_ret_dict['interval_mask'][unlabeled_inds]
             if self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'all':
                 unlabeled_rcnn_cls_weights[ul_interval_mask] = rcnn_bg_score_teacher[unlabeled_inds][ul_interval_mask]
