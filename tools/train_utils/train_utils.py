@@ -143,11 +143,10 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
             else:
                 cur_scheduler = lr_scheduler
 
-            # TODO (shashank) : Uncomment the if statement check for cur_epoch once tested and debugged
             #update pseudo label for the previous epoch
             if ul_gt_sampler_cfg.get('ENABLE', False):
-                if ((cur_epoch % ul_gt_sampler_cfg.UPDATE_PSEUDO_LABEL_INTERVAL == 0)):
-                        #and cur_epoch != 0):
+                if ((cur_epoch % ul_gt_sampler_cfg.UPDATE_PSEUDO_LABEL_INTERVAL == 0)
+                        and cur_epoch != 0):
                     save_pseudo_label_epoch(
                         model=model, data_loader=train_loader, rank=rank,
                         leave_pbar=True, cur_epoch=cur_epoch

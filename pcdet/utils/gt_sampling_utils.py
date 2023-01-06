@@ -135,12 +135,13 @@ def gather_and_dump_pseudo_label_result(rank, cur_epoch):
         min_num = int(min_num)
         if min_num > 0 and name in cfg.CLASS_NAMES:
             filtered_infos = []
-            for info in NEW_PSEUDO_LABELS_DICT[name]:
-                if info['num_points_in_gt'] >= min_num:
-                    filtered_infos.append(info)
-            print('PL Database filter by min points %s: %d => %d' %
-                                (name, len(NEW_PSEUDO_LABELS_DICT[name]), len(filtered_infos)))
-            NEW_PSEUDO_LABELS_DICT[name] = filtered_infos
+            if name in NEW_PSEUDO_LABELS_DICT.keys():
+                for info in NEW_PSEUDO_LABELS_DICT[name]:
+                    if info['num_points_in_gt'] >= min_num:
+                        filtered_infos.append(info)
+                print('PL Database filter by min points %s: %d => %d' %
+                                    (name, len(NEW_PSEUDO_LABELS_DICT[name]), len(filtered_infos)))
+                NEW_PSEUDO_LABELS_DICT[name] = filtered_infos
 
     # dump new pseudo label to given dir
     if rank == 0:
