@@ -225,6 +225,18 @@ class PVRCNN_SSL(Detector3DTemplate):
                                                                                     override_thresh=0.0,
                                                                                     no_nms_for_unlabeled=self.no_nms)
 
+            # Log class distribution batchwise for labeled/unlabaled batches
+            label_dist = {}
+            for ind, batch_inds in enumerate([labeled_inds, unlabeled_inds]):
+                batch_dist = {'Car': 0, 'Pedestrian': 0, 'Cyclist': 0}
+                
+                batch_labels = batch_dict['gt_boxes'][batch_inds][...,-1].flatten()
+                label_count = torch.bincount(batch_labels.int(), minlength = 4).tolist()
+                label_count = label_count[1:]
+                for class_idx, class_name in enumerate(batch_dist.keys()):
+                    batch_dist[class_name] = label_count[class_idx]
+                label_dist[ind] = batch_dist
+
             # Used for calc stats before and after filtering
             ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
 
@@ -402,6 +414,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             for key in self.metric_registry.tags():
                 metrics = self.compute_metrics(tag=key)
                 tb_dict_.update(metrics)
+
+            tb_dict_["class_dist_labeled"] = label_dist[0]
+            tb_dict_["class_dist_unlabeled"] = label_dist[1]
 
             if dist.is_initialized():
                 rank = os.getenv('RANK')
