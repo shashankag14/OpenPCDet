@@ -518,6 +518,8 @@ class RoIHeadTemplate(nn.Module):
             # Ignoring all-zero pseudo-labels produced due to filtering
             ignore_mask = torch.eq(gt_of_rois, 0).all(dim=-1)
             rcnn_cls_labels[ignore_mask] = -1
+            # Overwrite new interval mask and rcnn_cls_labels as per lower classwise thresholds 
+            self.forward_ret_dict['interval_mask'][unlabeled_inds] = interval_mask
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
 
             # The soft-teacher is similar to the other methods as it defines the rcnn_cls_labels or its "weights."
