@@ -13,7 +13,6 @@ from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 import pickle as pkl
 
 PSEUDO_LABELS_DICT = {}
-NEW_PSEUDO_LABELS_DICT = {}
 
 # Adapted from ST3D
 def save_pseudo_label_epoch(model, data_loader, rank, leave_pbar, cur_epoch):
@@ -122,11 +121,11 @@ def save_pseudo_label_batch(batch_dict, pred_dicts=None):
 def gather_and_dump_pseudo_label_result(rank, cur_epoch):
     commu_utils.synchronize()
     if dist.is_initialized():
-        part_pseudo_labels_list = commu_utils.all_gather(NEW_PSEUDO_LABELS_DICT)
+        part_pseudo_labels_list = commu_utils.all_gather(PSEUDO_LABELS_DICT)
         new_pseudo_label_dict = {}
         for pseudo_labels in part_pseudo_labels_list:
             new_pseudo_label_dict.update(pseudo_labels)
-        NEW_PSEUDO_LABELS_DICT.update(new_pseudo_label_dict)
+        PSEUDO_LABELS_DICT.update(new_pseudo_label_dict)
 
     # Filter infos by min points 
     filtered_infos = []
@@ -135,24 +134,22 @@ def gather_and_dump_pseudo_label_result(rank, cur_epoch):
         min_num = int(min_num)
         if min_num > 0 and name in cfg.CLASS_NAMES:
             filtered_infos = []
-            if name in NEW_PSEUDO_LABELS_DICT.keys():
-                for info in NEW_PSEUDO_LABELS_DICT[name]:
+            if name in PSEUDO_LABELS_DICT.keys():
+                for info in PSEUDO_LABELS_DICT[name]:
                     if info['num_points_in_gt'] >= min_num:
                         filtered_infos.append(info)
                 print('PL Database filter by min points %s: %d => %d' %
-                                    (name, len(NEW_PSEUDO_LABELS_DICT[name]), len(filtered_infos)))
-                NEW_PSEUDO_LABELS_DICT[name] = filtered_infos
+                                    (name, len(PSEUDO_LABELS_DICT[name]), len(filtered_infos)))
+                PSEUDO_LABELS_DICT[name] = filtered_infos
 
     # dump new pseudo label to given dir
     if rank == 0:
         ps_path = os.path.join(cfg.MODEL.UL_GT_SAMPLER['PL_DIR'], "ps_dbinfos.pkl".format(cur_epoch))
         with open(ps_path, 'wb') as f:
-            pkl.dump(NEW_PSEUDO_LABELS_DICT, f)
+            pkl.dump(PSEUDO_LABELS_DICT, f)
 
     commu_utils.synchronize()
     PSEUDO_LABELS_DICT.clear()
-    PSEUDO_LABELS_DICT.update(NEW_PSEUDO_LABELS_DICT)
-    NEW_PSEUDO_LABELS_DICT.clear()
 
 # Adapted from create_groundtruth_database in kitti_dataset_ssl.py        
 def create_pl_database(gt_boxes, frame_id):
@@ -187,10 +184,10 @@ def create_pl_database(gt_boxes, frame_id):
                     'box3d_lidar': gt_boxes[gt_idx][:7], 'num_points_in_gt': gt_points.shape[0],
                     'difficulty': 1, 'bbox': bbox, 'score': score}
         
-        if cls_name in NEW_PSEUDO_LABELS_DICT:
-            NEW_PSEUDO_LABELS_DICT[cls_name].append(db_info)
+        if cls_name in PSEUDO_LABELS_DICT:
+            PSEUDO_LABELS_DICT[cls_name].append(db_info)
         else:
-            NEW_PSEUDO_LABELS_DICT[cls_name] = [db_info]
+            PSEUDO_LABELS_DICT[cls_name] = [db_info]
 
 def get_lidar(frame_id):
     lidar_file = cfg.ROOT_DIR / 'data/kitti/training/velodyne' / ('%s.bin' % frame_id)

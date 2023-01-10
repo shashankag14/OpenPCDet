@@ -216,6 +216,8 @@ class DataBaseSampler(object):
     
     # Merge unlabeled GTs into DB infos
     def merge_dbinfos(self, ul_gt_db_infos):
+        with open(str(ul_gt_db_infos), 'rb') as f:
+            pl_infos = pickle.load(f)
         # Reset db infos i.e. remove prev epoch's PL infos from db infos and then marge the new PL infos
         for class_name in self.class_names:
             if len(self.db_infos[class_name]) != self.labeled_pointers[class_name]:
@@ -223,10 +225,10 @@ class DataBaseSampler(object):
                 self.sample_groups[class_name]['pointer'] = self.labeled_pointers[class_name]
                 self.sample_groups[class_name]['indices'] = self.labeled_indices[class_name]
 
-        with open(str(ul_gt_db_infos), 'rb') as f:
-            infos = pickle.load(f)
-            [self.db_infos[cur_class].extend(infos[cur_class]) for cur_class in self.class_names]
+        # Merge new PL infos into original DB infos
+        [self.db_infos[cur_class].extend(pl_infos[cur_class]) for cur_class in pl_infos.keys()]
 
+        # Update pointer and indices as per the merged DB infos
         for x in self.sampler_cfg.SAMPLE_GROUPS:
             class_name, _ = x.split(':')
             if class_name not in self.class_names:
