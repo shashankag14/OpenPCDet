@@ -5,6 +5,7 @@ import copy
 import numpy as np
 import SharedArray
 import torch.distributed as dist
+import shutil
 
 from pathlib import Path
 from pcdet.config import cfg
@@ -214,11 +215,11 @@ class DataBaseSampler(object):
         data_dict['points'] = points
         return data_dict
     
-    # Merge unlabeled GTs into DB infos
+    # Merge unlabeled GTs (PLs) into DB infos
     def merge_dbinfos(self, ul_gt_db_infos):
         with open(str(ul_gt_db_infos), 'rb') as f:
             pl_infos = pickle.load(f)
-        # Reset db infos i.e. remove prev epoch's PL infos from db infos and then marge the new PL infos
+        # Reset db infos i.e. remove old PL infos from db infos and then merge the new PL infos
         for class_name in self.class_names:
             if len(self.db_infos[class_name]) != self.labeled_pointers[class_name]:
                 self.db_infos[class_name] = self.db_infos[class_name][:self.labeled_pointers[class_name]]
@@ -235,6 +236,10 @@ class DataBaseSampler(object):
                 continue
             self.sample_groups[class_name]['pointer'] = len(self.db_infos[class_name])
             self.sample_groups[class_name]['indices'] = np.arange(len(self.db_infos[class_name])) 
+
+        # Clear current PL infos pickle file so that it is not merged again till the new ones are available
+        if Path(ul_gt_db_infos).exists():
+            os.remove(Path(ul_gt_db_infos))
 
     def __call__(self, data_dict, no_db_sample=False):
         """
