@@ -147,6 +147,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, cls_bg_thresh=cls_bg_thresh)
+        vals_to_store = ['pred_ious', 'gt_iou_of_rois', 'rcnn_cls_score_teacher', 
+                            'roi_scores', 'pcv_scores', 'num_points_in_roi', 
+                            'roi_labels', 'cur_iteration', 'cur_epoch']
+        self.val_dict = {val: {'Car': [], 'Pedestrian': [], 'Cyclist': []} for val in vals_to_store}
 
     def forward(self, batch_dict):
         if self.training:
@@ -398,6 +402,54 @@ class PVRCNN_SSL(Detector3DTemplate):
                     tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].mean()
                 else:
                     tb_dict_[key] = tb_dict[key]
+
+            # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling 
+            # TODO (shashank) : Can be optimized later to save computational time. 
+            batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
+            batch_roi_labels = [roi_labels.clone().detach() for roi_labels in batch_roi_labels]
+            
+            batch_rois = self.pv_rcnn.roi_head.forward_ret_dict['rois'][unlabeled_inds]
+            batch_rois = [rois.clone().detach() for rois in batch_rois]
+            
+            batch_ori_gt_boxes = self.pv_rcnn.roi_head.forward_ret_dict['ori_unlabeled_boxes']
+            batch_ori_gt_boxes = [ori_gt_boxes.clone().detach() for ori_gt_boxes in batch_ori_gt_boxes]
+
+            class_to_name = {0: 'Car', 1: 'Pedestrian', 2: 'Cyclist'}
+            for i in range(len(batch_rois)):
+                valid_rois_mask = torch.logical_not(torch.all(batch_rois[i] == 0, dim=-1))
+                valid_rois = batch_rois[i][valid_rois_mask]
+                valid_roi_labels = batch_roi_labels[i][valid_rois_mask]
+                valid_roi_labels -= 1                                   # Starting class indices from zero
+
+                valid_gt_boxes_mask = torch.logical_not(torch.all(batch_ori_gt_boxes[i] == 0, dim=-1))
+                valid_gt_boxes = batch_ori_gt_boxes[i][valid_gt_boxes_mask]
+                valid_gt_boxes[:, -1] -= 1                              # Starting class indices from zero
+                
+                num_gts = valid_gt_boxes_mask.sum()
+                num_preds = valid_rois_mask.sum()
+                
+                for cind in range(len(list(class_to_name.keys()))):
+                    pred_cls_mask = valid_roi_labels[i] == cind
+                    if num_gts > 0 and num_preds > 0:
+                        # Find IoU between Student's ROI v/s Original GTs
+                        overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_rois[:, 0:7], valid_gt_boxes[:, 0:7])
+                        preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+                        assigned_gt_cls_mask = valid_gt_boxes[assigned_gt_inds, -1] == cind
+                        cc_mask = (pred_cls_mask & assigned_gt_cls_mask)  # Correctly Classified mask
+
+                        # Store inputs(scores) and output(IoUs) only if there are any correctly classified samples
+                        if torch.count_nonzero(cc_mask) > 0:
+                            cur_unlabeled_ind = unlabeled_inds[i]
+                            for key in self.val_dict.keys():
+                                # Store target
+                                if key == 'pred_ious':
+                                    self.val_dict['pred_ious'][class_to_name[cind]].append(preds_iou_max[cc_mask])
+                                elif key in ['cur_iteration', 'cur_epoch']:
+                                    self.val_dict[key][class_to_name[cind]].append(batch_dict[key])
+                                # Store inputs
+                                else:
+                                    cur_cc_score = self.pv_rcnn.roi_head.forward_ret_dict[key][cur_unlabeled_ind][cc_mask]
+                                    self.val_dict[key][class_to_name[cind]].append(cur_cc_score)
 
             for key in self.metric_registry.tags():
                 metrics = self.compute_metrics(tag=key)
