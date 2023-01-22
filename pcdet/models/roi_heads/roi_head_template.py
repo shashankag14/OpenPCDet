@@ -459,9 +459,23 @@ class RoIHeadTemplate(nn.Module):
                 batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
                 cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
                 if 'rcnn_cls_weights' in forward_ret_dict:
-                    rcnn_cls_weights = forward_ret_dict['rcnn_cls_weights']
-                    rcnn_loss_cls_norm = (cls_valid_mask * rcnn_cls_weights).sum(-1)
-                    rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm, min=1.0)
+                    rcnn_loss_cls = torch.zeros(batch_size, device=batch_loss_cls.device)
+                    # batch wise cls loss 
+                    for ind in range(batch_size):
+                        rcnn_cls_weights = forward_ret_dict['rcnn_cls_weights'][ind]
+                        
+                        # certain region loss - no weights applied (1s) and normalised with total number of certain region ROIs
+                        certain_mask = (rcnn_cls_weights == 1) * cls_valid_mask[ind]
+                        certain_loss = batch_loss_cls[ind, certain_mask.bool()].sum(-1) / torch.clamp(certain_mask.sum(), min=1.0)
+                        
+                        # uncertain region loss - weights applied and normalised with sum of uncertain region ROI weights (coming from rcnn_cls_score_teacher)
+                        uncertain_mask = ~(rcnn_cls_weights == 1) * cls_valid_mask[ind]
+                        uncertain_weights = rcnn_cls_weights[uncertain_mask.bool()]
+                        rcnn_loss_cls_norm = uncertain_weights.sum(-1)
+                        uncertain_loss = (batch_loss_cls[ind, uncertain_mask.bool()] * uncertain_weights).sum(-1) \
+                                            / torch.clamp(rcnn_loss_cls_norm, min=1.0)
+
+                        rcnn_loss_cls[ind] = certain_loss + uncertain_loss 
                 else:
                     rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
                 rcnn_acc_cls = torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels).reshape(batch_size, -1)
