@@ -1,5 +1,5 @@
 import os
-
+import pickle
 import torch
 import copy
 
@@ -37,6 +37,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
+        vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'weights', 'class_labels', 'iteration']
+        self.val_dict = {val: [] for val in vals_to_store}
 
     def forward(self, batch_dict):
         if self.training:
@@ -239,6 +241,61 @@ class PVRCNN_SSL(Detector3DTemplate):
                     tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 else:
                     tb_dict_[key] = tb_dict[key]
+
+            # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling 
+            # NOTE (shashank) : this has been adapted from DA-35-iou-metrics branch to compare the scores via plots
+            batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
+            batch_roi_labels = [roi_labels.clone().detach() for roi_labels in batch_roi_labels]
+
+            batch_rois = self.pv_rcnn.roi_head.forward_ret_dict['rois'][unlabeled_inds]
+            batch_rois = [rois.clone().detach() for rois in batch_rois]
+
+            batch_ori_gt_boxes = [ori_gt_boxes.clone().detach() for ori_gt_boxes in ori_unlabeled_boxes]
+
+            class_to_name = {0: 'Car', 1: 'Pedestrian', 2: 'Cyclist'}
+            for i in range(len(batch_rois)):
+                valid_rois_mask = torch.logical_not(torch.all(batch_rois[i] == 0, dim=-1))
+                valid_rois = batch_rois[i][valid_rois_mask]
+                valid_roi_labels = batch_roi_labels[i][valid_rois_mask]
+                valid_roi_labels -= 1                                   # Starting class indices from zero
+
+                valid_gt_boxes_mask = torch.logical_not(torch.all(batch_ori_gt_boxes[i] == 0, dim=-1))
+                valid_gt_boxes = batch_ori_gt_boxes[i][valid_gt_boxes_mask]
+                valid_gt_boxes[:, -1] -= 1                              # Starting class indices from zero
+
+                num_gts = valid_gt_boxes_mask.sum()
+                num_preds = valid_rois_mask.sum()
+
+                cur_unlabeled_ind = unlabeled_inds[i]
+                if num_gts > 0 and num_preds > 0:
+                    # Find IoU between Student's ROI v/s Original GTs
+                    overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_rois[:, 0:7], valid_gt_boxes[:, 0:7])
+                    preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+
+                    # Store values in dict
+                    cur_iou_roi_pl = self.pv_rcnn.roi_head.forward_ret_dict['gt_iou_of_rois'][cur_unlabeled_ind]
+                    self.val_dict['iou_roi_pl'].extend(cur_iou_roi_pl.tolist())
+
+                    self.val_dict['iou_roi_gt'].extend(preds_iou_max.tolist())
+
+                    cur_pred_score = batch_dict['batch_cls_preds'][cur_unlabeled_ind].squeeze()
+                    self.val_dict['pred_scores'].extend(cur_pred_score.tolist())
+
+                    # Here weights=1 unlike our algo
+                    cur_weight = torch.ones_like(cur_pred_score)
+                    self.val_dict['weights'].extend(cur_weight.tolist())
+
+                    cur_roi_label = batch_dict['roi_labels'][cur_unlabeled_ind].squeeze()
+                    self.val_dict['class_labels'].extend(cur_roi_label.tolist())
+
+                    cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
+                    self.val_dict['iteration'].extend(cur_iteration.tolist())
+
+            # replace old pickle data (if exists) with updated one 
+            # NOTE : extending the updated data to old one
+            output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+            file_path = os.path.join(output_dir, 'ious_baseline.pkl')
+            pickle.dump(self.val_dict, open(file_path, 'wb'))
 
             tb_dict_['pseudo_ious'] = _mean(pseudo_ious)
             tb_dict_['pseudo_accs'] = _mean(pseudo_accs)
