@@ -618,6 +618,12 @@ class RoIHeadTemplate(nn.Module):
                     unlabeled_rcnn_cls_weights[ul_interval_mask] = self.forward_ret_dict['rcnn_cls_score_teacher'][unlabeled_inds][ul_interval_mask]
                     ulb_bg_mask = self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] == 0
                     unlabeled_rcnn_cls_weights[ulb_bg_mask] = rcnn_bg_score_teacher[unlabeled_inds][ulb_bg_mask]
+                # Apply FG scores as weights only to samples having ROI scores > 0.20 in UC region; apply BG scores to BG as it is
+                elif self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'fp_rev_uc-bg':
+                    roi_scores = torch.sigmoid(self.forward_ret_dict['roi_scores'][unlabeled_inds])
+                    fp_interval_mask = (roi_scores < 0.07) & ul_interval_mask
+                    unlabeled_rcnn_cls_weights[fp_interval_mask] = self.forward_ret_dict['rcnn_cls_score_teacher'][unlabeled_inds][fp_interval_mask]
+                    unlabeled_rcnn_cls_weights[~ulb_fg_mask] = rcnn_bg_score_teacher[unlabeled_inds][~ulb_fg_mask]
 
                 # Use teacher's FG scores for FG mask, teacher's BG scores for UC+BG mask
                 elif self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'fg-uc-bg':           
@@ -633,7 +639,7 @@ class RoIHeadTemplate(nn.Module):
                 elif self.model_cfg['LOSS_CONFIG']['UL_RCNN_CLS_WEIGHT_TYPE'] == 'fg-bg':
                     unlabeled_rcnn_cls_weights[ulb_fg_mask] = self.forward_ret_dict['rcnn_cls_score_teacher'][unlabeled_inds][ulb_fg_mask]
                     unlabeled_rcnn_cls_weights[ulb_bg_mask] = rcnn_bg_score_teacher[unlabeled_inds][ulb_bg_mask]
-                
+
                 else:
                     raise ValueError
 
