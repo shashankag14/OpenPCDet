@@ -629,7 +629,8 @@ class RoIHeadTemplate(nn.Module):
             unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
             batch_roi_labels = self.forward_ret_dict['roi_labels'][unlabeled_inds].detach().clone()
             batch_roi_ious = self.forward_ret_dict['gt_iou_of_rois'][unlabeled_inds].detach().clone()
-            metric_inputs = {'batch_roi_labels': batch_roi_labels, 'batch_iou_wrt_pl': batch_roi_ious}
+            metric_inputs = {'batch_roi_labels': batch_roi_labels, 'batch_iou_wrt_pl': batch_roi_ious,
+                            'iteration': self.forward_ret_dict['cur_iteration']}
             adaptive_thresh_metric.update(**metric_inputs)
 
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)

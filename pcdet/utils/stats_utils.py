@@ -31,20 +31,28 @@ class AdaptiveThreshMetrics(Metric):
         self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL', 256)
         self.percent = kwargs.get('PERCENT', 0.1)
         self.pre_filter_thresh = kwargs.get('PRE_FILTERING_THRESH', 0.25)
-
-        # TODO(farzad) To be cautious with dist mode I impl. it simple. Refactor it later to be more general.
-        self.add_state("roi_ious_car", default=[], dist_reduce_fx='cat')
-        self.add_state("roi_ious_ped", default=[], dist_reduce_fx='cat')
-        self.add_state("roi_ious_cyc", default=[], dist_reduce_fx='cat')
+        self.num_to_class = {1:'Car', 2:'Ped', 3:'Cyc'}
+        store_vals = ['roi_ious', 'batches', 'iterations']
+        
+        for vals in store_vals:
+            for class_name in self.num_to_class.values():
+                # TODO(farzad) To be cautious with dist mode I impl. it simple. Refactor it later to be more general.
+                self.add_state(vals+'_'+class_name.lower(), default=[], dist_reduce_fx='cat')
         self.add_state("global_sample_count", default=torch.tensor(0, dtype=torch.int), dist_reduce_fx="sum")
 
-    def update(self, batch_roi_labels: torch.Tensor, batch_iou_wrt_pl: torch.Tensor) -> None:
+    def update(self, batch_roi_labels: torch.Tensor, batch_iou_wrt_pl: torch.Tensor, iteration:  int) -> None:
 
         assert batch_roi_labels.ndim == 2
 
-        self.roi_ious_car.append(batch_iou_wrt_pl[batch_roi_labels == 1].view(-1))
-        self.roi_ious_ped.append(batch_iou_wrt_pl[batch_roi_labels == 2].view(-1))
-        self.roi_ious_cyc.append(batch_iou_wrt_pl[batch_roi_labels == 3].view(-1))
+        # create tensor with each row representing the batch number
+        num_batches = torch.arange(0, batch_roi_labels.shape[0]).view(-1, 1).repeat(1, batch_roi_labels.shape[1])
+        iterations = torch.ones_like(batch_roi_labels) * iteration
+
+        for class_idx, class_name in self.num_to_class.items():
+            getattr(self, 'roi_ious_'+class_name.lower()).append(batch_iou_wrt_pl[batch_roi_labels == class_idx].view(-1))
+            getattr(self, 'batches_'+class_name.lower()).append(num_batches[batch_roi_labels == class_idx].view(-1))
+            getattr(self, 'iterations_'+class_name.lower()).append(iterations[batch_roi_labels == class_idx].view(-1))
+
         self.global_sample_count += batch_roi_labels.shape[0]
 
     def compute(self):
@@ -53,14 +61,28 @@ class AdaptiveThreshMetrics(Metric):
         if self.global_sample_count >= self.reset_state_interval:
             results['adapt_roi_ious_pl'] = {}
             fig, axs = plt.subplots(1, 3, figsize=(10, 3), gridspec_kw={'wspace': 0.5})
-            num_to_class = {0:'Car', 1:'Pedestrian', 2:'Cyclist'}
-            for i, mstate in enumerate([self.roi_ious_car, self.roi_ious_ped, self.roi_ious_cyc]):
-                if isinstance(mstate, torch.Tensor):
-                    mstate = [mstate]
-                roi_ious_pl = torch.cat(mstate, dim=0)
+            
+            for i, class_name in enumerate(self.num_to_class.values()):
+                roi_ious = getattr(self, 'roi_ious_'+class_name.lower())
+                batches = getattr(self, 'batches_'+class_name.lower())
+                iterations = getattr(self, 'iterations_'+class_name.lower())
+                
+                if isinstance(roi_ious, torch.Tensor):
+                    roi_ious = [roi_ious]
+                if isinstance(batches, torch.Tensor):
+                    batches = [batches]
+                if isinstance(iterations, torch.Tensor):
+                    iterations = [iterations]
+
+                roi_ious_pl, batches, iterations = torch.cat(roi_ious, dim=0), torch.cat(batches, dim=0), torch.cat(iterations, dim=0)
+
                 filter_mask = roi_ious_pl > self.pre_filter_thresh
-                roi_ious_pl = roi_ious_pl[filter_mask]
-                results['adapt_roi_ious_pl'][num_to_class[i]] = roi_ious_pl.cpu().numpy()
+                roi_ious_pl, batches, iterations = roi_ious_pl[filter_mask], batches[filter_mask], iterations[filter_mask]
+
+                results['adapt_roi_ious_pl']['roi_ious_'+class_name.lower()] = roi_ious_pl.cpu().numpy()
+                results['adapt_roi_ious_pl']['batches_'+class_name.lower()] = batches.cpu().numpy()
+                results['adapt_roi_ious_pl']['iterations_'+class_name.lower()] = iterations.cpu().numpy()
+
                 if roi_ious_pl.shape[0] == 0:
                     threshs.append(0.0)
                     continue

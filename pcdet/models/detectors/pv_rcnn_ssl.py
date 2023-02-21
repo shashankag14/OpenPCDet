@@ -151,7 +151,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.adaptive_thresh_metric = AdaptiveThreshMetrics(**model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG)
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'weights', 'class_labels', 'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
-        self.adapt_roi_ious_pl_dict = {key: [] for key in ['Car', 'Pedestrian', 'Cyclist']}
+        self.adapt_roi_ious_pl_dict = {}
 
     def forward(self, batch_dict):
         if self.training:
@@ -314,6 +314,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
             self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
+            self.pv_rcnn.roi_head.forward_ret_dict['cur_iteration'] = batch_dict['cur_iteration']
 
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                 # using teacher to evaluate student's bg/fg proposals through its rcnn head
@@ -453,8 +454,12 @@ class PVRCNN_SSL(Detector3DTemplate):
             if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
                 adaptive_metrics = self.adaptive_thresh_metric.compute()
                 if adaptive_metrics:
-                    for class_name in self.adapt_roi_ious_pl_dict.keys():
-                        self.adapt_roi_ious_pl_dict[class_name].append(adaptive_metrics['adapt_roi_ious_pl'][class_name])
+                    # store all values in dictionary for the pickle file
+                    for key in adaptive_metrics['adapt_roi_ious_pl'].keys():
+                        if key not in self.adapt_roi_ious_pl_dict.keys():
+                            self.adapt_roi_ious_pl_dict[key] = []
+                        self.adapt_roi_ious_pl_dict[key].append(adaptive_metrics['adapt_roi_ious_pl'][key])
+
                     tb_dict_.update({'roi_iou_pl_densities': adaptive_metrics['adapt_threshs_fig']})
                     threshs = {c: t for c, t in zip(['Car', 'Pedestrian', 'Cyclist'], adaptive_metrics['adapt_threshs'])}
                     tb_dict_.update({'adapt_threshs': threshs})
