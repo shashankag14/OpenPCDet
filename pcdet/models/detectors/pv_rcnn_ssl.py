@@ -151,6 +151,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.adaptive_thresh_metric = AdaptiveThreshMetrics(**model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG)
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'weights', 'class_labels', 'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
+        self.adapt_roi_ious_pl_dict = {key: [] for key in ['Car', 'Pedestrian', 'Cyclist']}
 
     def forward(self, batch_dict):
         if self.training:
@@ -452,9 +453,16 @@ class PVRCNN_SSL(Detector3DTemplate):
             if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
                 adaptive_metrics = self.adaptive_thresh_metric.compute()
                 if adaptive_metrics:
+                    for class_name in self.adapt_roi_ious_pl_dict.keys():
+                        self.adapt_roi_ious_pl_dict[class_name].append(adaptive_metrics['adapt_roi_ious_pl'][class_name])
                     tb_dict_.update({'roi_iou_pl_densities': adaptive_metrics['adapt_threshs_fig']})
                     threshs = {c: t for c, t in zip(['Car', 'Pedestrian', 'Cyclist'], adaptive_metrics['adapt_threshs'])}
                     tb_dict_.update({'adapt_threshs': threshs})
+
+                    # replace old pickle data (if exists) with updated one 
+                    output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+                    file_path = os.path.join(output_dir, 'adap_roi_ious_pl.pkl')
+                    pickle.dump(self.adapt_roi_ious_pl_dict, open(file_path, 'wb'))
 
             if dist.is_initialized():
                 rank = os.getenv('RANK')

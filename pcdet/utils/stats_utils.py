@@ -51,13 +51,16 @@ class AdaptiveThreshMetrics(Metric):
         results = {}
         threshs = []
         if self.global_sample_count >= self.reset_state_interval:
+            results['adapt_roi_ious_pl'] = {}
             fig, axs = plt.subplots(1, 3, figsize=(10, 3), gridspec_kw={'wspace': 0.5})
+            num_to_class = {0:'Car', 1:'Pedestrian', 2:'Cyclist'}
             for i, mstate in enumerate([self.roi_ious_car, self.roi_ious_ped, self.roi_ious_cyc]):
                 if isinstance(mstate, torch.Tensor):
                     mstate = [mstate]
                 roi_ious_pl = torch.cat(mstate, dim=0)
                 filter_mask = roi_ious_pl > self.pre_filter_thresh
                 roi_ious_pl = roi_ious_pl[filter_mask]
+                results['adapt_roi_ious_pl'][num_to_class[i]] = roi_ious_pl.cpu().numpy()
                 if roi_ious_pl.shape[0] == 0:
                     threshs.append(0.0)
                     continue
