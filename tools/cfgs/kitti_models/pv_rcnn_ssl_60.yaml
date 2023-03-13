@@ -270,6 +270,12 @@ MODEL:
     EMA_UPDATE_INTERVAL: 1 
     REDUCE_LOSS: 'mean'
     STORE_SCORES_IN_PKL: False
+    DYNAMIC_ULB_LOSS_WEIGHT:
+        ENABLE: False
+        START_WEIGHT: 1
+        END_WEIGHT: 4
+        ALPHA: 0.2
+        STEP_SIZE: 5
 
 
 OPTIMIZATION:

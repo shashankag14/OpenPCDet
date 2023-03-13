@@ -1,6 +1,7 @@
 import copy
 import os
 import pickle
+import math
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -359,6 +360,16 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, ulb_loss_cls_dist, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
+
+            # dynamic weights for ULB loss
+            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False):
+                start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_WEIGHT', 1.0)
+                end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT', 4.0)
+                alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ALPHA', 0.2)
+                step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE', 5)
+                
+                self.unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
+                tb_dict['unlabeled_weight'] = self.unlabeled_weight            
 
             # Use the same reduction method as the baseline model (3diou) by the default
             reduce_loss = getattr(torch, self.model_cfg.REDUCE_LOSS, 'sum')
