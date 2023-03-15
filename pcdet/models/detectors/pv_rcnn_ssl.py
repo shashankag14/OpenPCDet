@@ -368,8 +368,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ALPHA', 0.2)
                 step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE', 5)
                 
-                self.unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
-                tb_dict['unlabeled_weight'] = self.unlabeled_weight            
+                dynamic_unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
+                tb_dict['dynamic_unlabeled_weight'] = dynamic_unlabeled_weight            
 
             # Use the same reduction method as the baseline model (3diou) by the default
             reduce_loss = getattr(torch, self.model_cfg.REDUCE_LOSS, 'sum')
@@ -381,7 +381,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rpn_box = reduce_loss(loss_rpn_box[labeled_inds, ...]) + reduce_loss(loss_rpn_box[unlabeled_inds, ...]) * self.unlabeled_weight
             loss_point = reduce_loss(loss_point[labeled_inds, ...])
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False) or self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
-                loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...]) + reduce_loss(loss_rcnn_cls[unlabeled_inds, ...]) * self.unlabeled_weight
+                loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...]) + reduce_loss(loss_rcnn_cls[unlabeled_inds, ...]) * self.unlabeled_weight * dynamic_unlabeled_weight
             else:
                 loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...])
             if not self.unlabeled_supervise_refine:
