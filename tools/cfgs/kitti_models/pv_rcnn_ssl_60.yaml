@@ -234,6 +234,13 @@ MODEL:
     SEM_THRESH: [0.2, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
+    DYNAMIC_ULB_LOSS_WEIGHT:
+        ENABLE: False
+        ENABLE_CLASSWISE: False
+        START_WEIGHT: 1
+        END_WEIGHT: 4
+        ALPHA: 0.2
+        STEP_SIZE: 5
 
 
 OPTIMIZATION:

@@ -211,6 +211,25 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
+            # dynamic weights for ULB loss
+            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False):
+                if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE_CLASSWISE', False):
+                    # based on labeled data, assuming same for unlabaled data
+                    class_dist = {'Car': 0.82, 'Pedestrian': 0.13, 'Cyclist': 0.05}
+                    inv_class_dist = [1.0 / x for x in class_dist.values()]
+                    class_alpha = [x / sum(inv_class_dist) for x in inv_class_dist]
+                    class_unlabeled_weight = [min(start_weight + x * math.pow(math.floor(batch_dict['cur_epoch']/step_size), 2), end_weight) for x in class_alpha]
+                    for class_idx, class_name in enumerate(class_dist.keys()):
+                        tb_dict['unlabeled_weight_' + class_name] = class_unlabeled_weight[class_idx]
+                else:
+                    start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_WEIGHT', 1.0)
+                    end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT', 4.0)
+                    alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ALPHA', 0.2)
+                    step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE', 5)
+                    
+                    dynamic_unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
+                tb_dict['unlabeled_weight'] = self.dynamic_unlabeled_weight   
+
             if not self.unlabeled_supervise_cls:
                 loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
             else:
