@@ -172,6 +172,18 @@ class RoIHeadTemplate(nn.Module):
                 rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float()).sum() \
                                 / max(fg_sum, 1)
             else:
+                # Class-wise loss formulation
+                rcnn_loss_reg_dict = {'Car': None, 'Pedestrian': None, 'Cyclist': None}
+                for cls_idx, cls_name in enumerate(rcnn_loss_reg_dict.keys()):
+                    # Create classwise mask using ROI labels 
+                    cur_cls_mask = forward_ret_dict['roi_labels'] == (cls_idx+1)
+                    reg_cls_norm = (fg_mask.reshape(batch_size, -1) * cur_cls_mask).sum(-1)
+                    batch_rcnn_loss_reg = (rcnn_loss_reg.view(batch_size, -1, code_size) * fg_mask.reshape(batch_size, -1).unsqueeze(-1) * cur_cls_mask.unsqueeze(-1))
+                    rcnn_loss_reg_dict[cls_name] = batch_rcnn_loss_reg.sum(-1).sum(-1) / torch.clamp(reg_cls_norm, min=1.0)
+                tb_dict['rcnn_loss_reg_car'] = rcnn_loss_reg_dict['Car']
+                tb_dict['rcnn_loss_reg_ped'] = rcnn_loss_reg_dict['Pedestrian']
+                tb_dict['rcnn_loss_reg_cyc'] = rcnn_loss_reg_dict['Cyclist']
+                
                 fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
                 rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float()) \
                                     .reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
@@ -240,6 +252,13 @@ class RoIHeadTemplate(nn.Module):
                 rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
                 rcnn_acc_cls = torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels).reshape(batch_size, -1)
                 rcnn_acc_cls = (rcnn_acc_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+                # Class-wise loss formulation
+                rcnn_loss_cls_dict = {'Car': None, 'Pedestrian': None, 'Cyclist': None}
+                for cls_idx, cls_name in enumerate(rcnn_loss_cls_dict.keys()):
+                    # Create classwise mask using ROI labels 
+                    cur_cls_mask = forward_ret_dict['roi_labels'] == (cls_idx+1)
+                    rcnn_loss_cls_dict[cls_name] = (batch_loss_cls * cur_cls_mask).sum(-1) / torch.clamp(cur_cls_mask.sum(-1), min=1.0)
+
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
             batch_loss_cls = F.cross_entropy(rcnn_cls, rcnn_cls_labels, reduction='none', ignore_index=-1)
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
@@ -256,7 +275,10 @@ class RoIHeadTemplate(nn.Module):
         rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
         tb_dict = {
             'rcnn_loss_cls': rcnn_loss_cls.item() if scalar else rcnn_loss_cls,
-            'rcnn_acc_cls': rcnn_acc_cls.item() if scalar else rcnn_acc_cls
+            'rcnn_acc_cls': rcnn_acc_cls.item() if scalar else rcnn_acc_cls,
+            'rcnn_loss_cls_car': 0 if scalar else rcnn_loss_cls_dict['Car'],
+            'rcnn_loss_cls_ped': 0 if scalar else rcnn_loss_cls_dict['Pedestrian'],
+            'rcnn_loss_cls_cyc': 0 if scalar else rcnn_loss_cls_dict['Cyclist']
         }
         return rcnn_loss_cls, tb_dict
 
