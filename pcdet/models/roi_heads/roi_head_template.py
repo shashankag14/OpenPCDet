@@ -258,7 +258,7 @@ class RoIHeadTemplate(nn.Module):
                 for cls_idx, cls_name in enumerate(rcnn_loss_cls_dict.keys()):
                     # Create classwise mask using ROI labels 
                     cur_cls_mask = forward_ret_dict['roi_labels'] == (cls_idx+1)
-                    rcnn_loss_cls_dict[cls_name] = (batch_loss_cls * cur_cls_mask).sum(-1) / torch.clamp(cur_cls_mask.sum(-1), min=1.0)
+                    rcnn_loss_cls_dict[cls_name] = (batch_loss_cls * cur_cls_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
                 rcnn_loss_cls_dict['Total'] = rcnn_loss_cls_dict['Car'] + rcnn_loss_cls_dict['Pedestrian'] + rcnn_loss_cls_dict['Cyclist']
 
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
