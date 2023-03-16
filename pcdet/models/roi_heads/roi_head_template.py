@@ -708,9 +708,9 @@ class RoIHeadTemplate(nn.Module):
         rcnn_loss_car = cls_tb_dict['rcnn_loss_cls_car'] + reg_tb_dict['rcnn_loss_reg_car']
         rcnn_loss_ped = cls_tb_dict['rcnn_loss_cls_ped'] + reg_tb_dict['rcnn_loss_reg_ped']
         rcnn_loss_cyc = cls_tb_dict['rcnn_loss_cls_cyc'] + reg_tb_dict['rcnn_loss_reg_cyc']
-        rcnn_loss = rcnn_loss_car * self.forward_ret_dict['unlabeled_weight']['Car'] + \
-                    rcnn_loss_ped * self.forward_ret_dict['unlabeled_weight']['Pedestrian'] + \
-                    rcnn_loss_cyc * self.forward_ret_dict['unlabeled_weight']['Cyclist'] + \
+        rcnn_loss = rcnn_loss_car * self.forward_ret_dict['unlabeled_weight']['Car'] \
+                    + rcnn_loss_ped * self.forward_ret_dict['unlabeled_weight']['Pedestrian'] \
+                    + rcnn_loss_cyc * self.forward_ret_dict['unlabeled_weight']['Cyclist'] \
                     + ulb_loss_cls_dist
         
         # rcnn_loss = rcnn_loss_cls + rcnn_loss_reg + ulb_loss_cls_dist
