@@ -272,6 +272,7 @@ MODEL:
     STORE_SCORES_IN_PKL: False
     DYNAMIC_ULB_LOSS_WEIGHT:
         ENABLE: False
+        ENABLE_CLASSWISE: False
         START_WEIGHT: 1
         END_WEIGHT: 4
         ALPHA: 0.2

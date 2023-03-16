@@ -356,20 +356,39 @@ class PVRCNN_SSL(Detector3DTemplate):
                     # For metrics
                     self.pv_rcnn.roi_head.forward_ret_dict['batch_box_preds_teacher'] = batch_box_preds_teacher
 
+            self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_weight'] = {'Car': 1.0, 'Pedestrian': 1.0, 'Cyclist': 1.0}
+            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False) and self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE_CLASSWISE', False):
+                start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_WEIGHT', 1.0)
+                end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT', 4.0)
+                step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE', 5)
+                
+                # based on labeled data, assuming same for unlabaled data
+                class_dist = {'Car': 0.82, 'Pedestrian': 0.13, 'Cyclist': 0.05}
+                inv_class_dist = [1.0 / x for x in class_dist.values()]
+                class_alpha = [x / sum(inv_class_dist) for x in inv_class_dist]
+                class_unlabeled_weight = [min(start_weight + alpha * math.pow(math.floor(batch_dict['cur_epoch']/step_size), 1), end_weight) for alpha in class_alpha]
+                self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_weight'] = {'Car': class_unlabeled_weight[0],
+                                                                            'Pedestrian': class_unlabeled_weight[1],
+                                                                            'Cyclist': class_unlabeled_weight[2]}
+
             disp_dict = {}
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, ulb_loss_cls_dist, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
             # dynamic weights for ULB loss
-            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False):
+            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False) and (not self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE_CLASSWISE', False)):
                 start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_WEIGHT', 1.0)
                 end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT', 4.0)
                 alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ALPHA', 0.2)
                 step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE', 5)
                 
-                dynamic_unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
-                tb_dict['dynamic_unlabeled_weight'] = dynamic_unlabeled_weight            
+                self.unlabeled_weight = min(start_weight + alpha * math.floor(batch_dict['cur_epoch']/step_size), end_weight)
+            
+            if 'unlabeled_weight' in self.pv_rcnn.roi_head.forward_ret_dict:
+                tb_dict['unlabeled_weight'] = self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_weight']  
+            else:
+                tb_dict['unlabeled_weight'] = self.unlabeled_weight            
 
             # Use the same reduction method as the baseline model (3diou) by the default
             reduce_loss = getattr(torch, self.model_cfg.REDUCE_LOSS, 'sum')
@@ -381,7 +400,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rpn_box = reduce_loss(loss_rpn_box[labeled_inds, ...]) + reduce_loss(loss_rpn_box[unlabeled_inds, ...]) * self.unlabeled_weight
             loss_point = reduce_loss(loss_point[labeled_inds, ...])
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False) or self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
-                loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...]) + reduce_loss(loss_rcnn_cls[unlabeled_inds, ...]) * self.unlabeled_weight * dynamic_unlabeled_weight
+                loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...]) + reduce_loss(loss_rcnn_cls[unlabeled_inds, ...]) * self.unlabeled_weight
             else:
                 loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...])
             if not self.unlabeled_supervise_refine:
