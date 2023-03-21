@@ -65,7 +65,8 @@ class ProposalTargetLayerConsistency(nn.Module):
         batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
 
         for index in range(batch_size):
-            cur_gt_boxes = batch_dict['gt_boxes']
+            # Fixed bug for missing index. Adapted from DA-35-soft-teacher
+            cur_gt_boxes = batch_dict['gt_boxes'][index]
             k = cur_gt_boxes.__len__() - 1
             while k >= 0 and cur_gt_boxes[k].sum() == 0:
                 k -= 1
@@ -86,7 +87,7 @@ class ProposalTargetLayerConsistency(nn.Module):
                 cur_roi_scores = batch_dict['roi_scores_ema'][index][sampled_inds]
                 cur_roi_labels = batch_dict['roi_labels_ema'][index][sampled_inds]
                 batch_gt_scores[index] = batch_dict['pred_scores_ema'][index][sampled_inds]
-                batch_gt_of_rois[index] = cur_gt_boxes[index][sampled_inds]
+                batch_gt_of_rois[index] = cur_gt_boxes[sampled_inds]
             else:
                 sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment = self.subsample_labeled_rois(batch_dict, index)
 
@@ -94,7 +95,7 @@ class ProposalTargetLayerConsistency(nn.Module):
                 cur_roi_scores = batch_dict['roi_scores'][index][sampled_inds]
                 cur_roi_labels = batch_dict['roi_labels'][index][sampled_inds]
                 batch_roi_ious[index] = roi_ious
-                batch_gt_of_rois[index] = cur_gt_boxes[index][gt_assignment[sampled_inds]]
+                batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
 
             batch_rois[index] = cur_roi
             batch_roi_labels[index] = cur_roi_labels
@@ -105,7 +106,7 @@ class ProposalTargetLayerConsistency(nn.Module):
 
         targets_dict = {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'roi_scores': batch_roi_scores,
                         'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
-                        'rcnn_cls_labels': batch_cls_labels}
+                        'rcnn_cls_labels': batch_cls_labels, 'pred_scores_ema': batch_gt_scores}
 
         return targets_dict
 
