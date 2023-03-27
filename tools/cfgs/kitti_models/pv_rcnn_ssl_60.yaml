@@ -208,7 +208,7 @@ MODEL:
             HARD_BG_RATIO: 0.8
 
             REG_FG_THRESH: 0.55
-            UNLABELED_REG_FG_THRESH: 0.55
+            UNLABELED_REG_FG_THRESH: 0.9    # 0.55 for soft teacher based appraoch, TODO : keep separate YAML for this
             UNLABELED_SAMPLER_TYPE: subsample_unlabeled_rois_classwise
             UNLABELED_SAMPLE_EASY_BG: True
             UNLABELED_SHARP_RCNN_CLS_LABELS: True

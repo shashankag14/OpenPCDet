@@ -360,7 +360,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, ulb_loss_cls_dist, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
-            # Use the same reduction method as the baseline model (3diou) by the default
+            # Use the 'mean' reduction by default for all losses
             reduce_loss = getattr(torch, self.model_cfg.REDUCE_LOSS, 'sum')
             if not self.unlabeled_supervise_cls:
                     loss_rpn_cls = reduce_loss(loss_rpn_cls[labeled_inds, ...])
@@ -369,7 +369,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             loss_rpn_box = reduce_loss(loss_rpn_box[labeled_inds, ...]) + reduce_loss(loss_rpn_box[unlabeled_inds, ...]) * self.unlabeled_weight
             loss_point = reduce_loss(loss_point[labeled_inds, ...])
-            if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False) or self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
+            if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False) or \
+                self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False) or \
+                    self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
                 loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...]) + reduce_loss(loss_rcnn_cls[unlabeled_inds, ...]) * self.unlabeled_weight
             else:
                 loss_rcnn_cls = reduce_loss(loss_rcnn_cls[labeled_inds, ...])
