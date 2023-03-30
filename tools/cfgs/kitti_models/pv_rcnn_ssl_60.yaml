@@ -209,11 +209,13 @@ MODEL:
 
             REG_FG_THRESH: 0.55
             UNLABELED_REG_FG_THRESH: [0.55, 0.55, 0.55]
+            UNLABELED_REG_FG_THRESH_TEACHER_SCORE: [0.9,0.8,0.8]
             UNLABELED_SAMPLER_TYPE: subsample_unlabeled_rois_classwise
             UNLABELED_SAMPLE_EASY_BG: True
             UNLABELED_SHARP_RCNN_CLS_LABELS: True
             UNLABELED_USE_CALIBRATED_IOUS: True
             UNLABELED_TEACHER_SCORES_FOR_RVM: False
+            UNLABELED_HYBRID_RVM: False
             UNLABELED_INTERVAL_WITH_TEACHER_SCORES: False
             USE_ULB_CLS_FG_THRESH_FOR_LB: False
             DISABLE_ST_WEIGHTS: False

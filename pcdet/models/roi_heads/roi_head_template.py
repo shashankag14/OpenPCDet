@@ -591,6 +591,19 @@ class RoIHeadTemplate(nn.Module):
                 if self.model_cfg.TARGET_CONFIG.get("UNLABELED_TEACHER_SCORES_FOR_RVM", False):
                     # TODO Ensure this works with new classwise thresholds
                     filtering_mask = self.forward_ret_dict['rcnn_cls_score_teacher'][unlabeled_inds] > ulb_reg_fg_thresh
+                
+                # Apply two filters on RVM : based on iou(default) with 0.55 and also based on teacher conf scores with high thresh
+                elif self.model_cfg.TARGET_CONFIG.get("UNLABELED_HYBRID_RVM", False):
+                    teacher_score = self.forward_ret_dict['rcnn_cls_score_teacher'][unlabeled_inds]
+
+                    ulb_reg_fg_thresh_teacher = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH_TEACHER_SCORE
+                    ulb_reg_fg_thresh_teacher = teacher_score.new_tensor(ulb_reg_fg_thresh_teacher).reshape(1, 1, -1).repeat(*teacher_score.shape[:2], 1)
+                    ulb_reg_fg_thresh_teacher = torch.gather(ulb_reg_fg_thresh_teacher, dim=-1, index=roi_labels.unsqueeze(-1)).squeeze(-1) 
+
+                    iou_mask = gt_iou_of_rois > ulb_reg_fg_thresh
+                    teacher_mask = teacher_score > ulb_reg_fg_thresh_teacher
+                    filtering_mask = iou_mask & teacher_mask
+                
                 else:
                     filtering_mask = gt_iou_of_rois > ulb_reg_fg_thresh
                 self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
