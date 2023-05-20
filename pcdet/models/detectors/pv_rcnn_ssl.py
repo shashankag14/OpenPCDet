@@ -152,6 +152,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
+        self.pl_val_dict = {'pl_score':[], 'iou_pl_gt': []}
         self.val_dict = {val: [] for val in vals_to_store}
 
     def forward(self, batch_dict):
@@ -241,6 +242,23 @@ class PVRCNN_SSL(Detector3DTemplate):
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
 
             self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds)
+            
+            if self.model_cfg.get('STORE_PL_SCORES_IN_PKL', False) :
+                gts = ori_unlabeled_boxes.reshape(-1, 8)
+                pls = batch_dict['gt_boxes'][unlabeled_inds, ...].reshape(-1, 8)
+                non_zero_mask_gt = torch.any(gts != 0, dim=1)
+                non_zero_mask_pl = torch.any(pls != 0, dim=1)
+                ps = torch.cat(pseudo_scores)
+                if torch.count_nonzero(non_zero_mask_pl) > 0 and torch.count_nonzero(non_zero_mask_gt) > 0:
+                    overlap = iou3d_nms_utils.boxes_iou3d_gpu(pls[non_zero_mask_pl][..., 0:7], gts[non_zero_mask_gt][..., 0:7])
+                    iou_pl_gt_max, _ = overlap.max(dim=1)
+                    self.pl_val_dict['pl_score'].extend(ps.tolist())
+                    self.pl_val_dict['iou_pl_gt'].extend(iou_pl_gt_max.tolist())
+
+                # replace old pickle data (if exists) with updated one 
+                output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+                file_path = os.path.join(output_dir, 'pl_scores.pkl')
+                pickle.dump(self.pl_val_dict, open(file_path, 'wb'))
 
             # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
             batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='gt_boxes')
