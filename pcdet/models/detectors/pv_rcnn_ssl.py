@@ -231,7 +231,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True,
                                                                                     override_thresh=0.0,
                                                                                     no_nms_for_unlabeled=self.no_nms)
-
+            # used for storing PL scores and IoU(PL,GT)
+            org_pseudo_boxes, _, org_pseudo_scores, _, _, _ = self._unpack_predictions(pred_dicts_ens, unlabeled_inds)
             # Used for calc stats before and after filtering
             ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
             if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
@@ -245,10 +246,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             
             if self.model_cfg.get('STORE_PL_SCORES_IN_PKL', False) :
                 gts = ori_unlabeled_boxes.reshape(-1, 8)
-                pls = batch_dict['gt_boxes'][unlabeled_inds, ...].reshape(-1, 8)
+                pls = torch.cat(org_pseudo_boxes)
+                ps = torch.cat(org_pseudo_scores)
                 non_zero_mask_gt = torch.any(gts != 0, dim=1)
                 non_zero_mask_pl = torch.any(pls != 0, dim=1)
-                ps = torch.cat(pseudo_scores)
                 if torch.count_nonzero(non_zero_mask_pl) > 0 and torch.count_nonzero(non_zero_mask_gt) > 0:
                     overlap = iou3d_nms_utils.boxes_iou3d_gpu(pls[non_zero_mask_pl][..., 0:7], gts[non_zero_mask_gt][..., 0:7])
                     iou_pl_gt_max, _ = overlap.max(dim=1)
