@@ -209,6 +209,19 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
+            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ENABLE', False):
+                if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_EPOCH'):
+
+                    start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_WEIGHT')
+                    end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT')
+                    alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('ALPHA')
+                    step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('STEP_SIZE')
+
+                    self.unlabeled_weight = min(start_weight + alpha * math.floor((batch_dict['cur_epoch'] - self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_EPOCH', 1.0))/step_size), end_weight)
+                    tb_dict['unlabeled_weight'] = self.unlabeled_weight            
+                else:
+                    self.unlabeled_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT')
+
             if not self.unlabeled_supervise_cls:
                 loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
             else:
