@@ -50,7 +50,7 @@ def parse_config():
     parser.add_argument('--start_epoch', type=int, default=0, help='')
     parser.add_argument('--num_epochs_to_eval', type=int, default=0, help='number of checkpoints to be evaluated')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
-    parser.add_argument('--split', type=str, default='train')
+    parser.add_argument('--split', type=str, default='train_0.01_1')
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--thresh', type=str, default='0.5, 0.25, 0.25')
     parser.add_argument('--sem_thresh', type=str, default='0.4, 0.0, 0.0')
@@ -124,7 +124,7 @@ def main():
     args.epochs = cfg.OPTIMIZATION.NUM_EPOCHS if args.epochs is None else args.epochs
 
     if args.fix_random_seed:
-        common_utils.set_random_seed(666)
+        common_utils.set_random_seed(666 + cfg.LOCAL_RANK)
 
     output_dir = cfg.ROOT_DIR / 'output' / cfg.EXP_GROUP_PATH / cfg.TAG / args.extra_tag
     ckpt_dir = output_dir / 'ckpt'
@@ -158,7 +158,8 @@ def main():
         logger=logger,
         training=True,
         merge_all_iters_to_one_epoch=args.merge_all_iters_to_one_epoch,
-        total_epochs=args.epochs
+        total_epochs=args.epochs,
+        seed = 666 if args.fix_random_seed else None
     )
 
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
@@ -199,10 +200,26 @@ def main():
     # -----------------------start training---------------------------
     logger.info('**********************Start training %s/%s(%s)**********************'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    
+    test_set, test_loader, sampler = build_dataloader(
+        dataset_cfg=cfg.DATA_CONFIG,
+        class_names=cfg.CLASS_NAMES,
+        batch_size=args.eval_batch_size,
+        dist=dist_train, workers=args.workers,
+        logger=logger,
+        training=False
+    )
+    eval_in_train = cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False)
+    if eval_in_train:
+        test_loader_during_train = test_loader
+    else:
+        test_loader_during_train = None
+
     train_model(
         model,
         optimizer,
         train_loader,
+        test_loader= test_loader_during_train,
         model_func=model_fn_decorator(),
         lr_scheduler=lr_scheduler,
         optim_cfg=cfg.OPTIMIZATION,
@@ -227,12 +244,12 @@ def main():
 
     logger.info('**********************Start evaluation %s/%s(%s)**********************' %
                 (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-    test_set, test_loader, sampler = build_dataloader(
-        dataset_cfg=cfg.DATA_CONFIG,
-        class_names=cfg.CLASS_NAMES,
-        batch_size=args.eval_batch_size,
-        dist=dist_train, workers=args.workers, logger=logger, training=False
-    )
+    # test_set, test_loader, sampler = build_dataloader(
+    #     dataset_cfg=cfg.DATA_CONFIG,
+    #     class_names=cfg.CLASS_NAMES,
+    #     batch_size=args.eval_batch_size,
+    #     dist=dist_train, workers=args.workers, logger=logger, training=False
+    # )
     eval_output_dir = output_dir / 'eval' / 'eval_with_train'
     eval_output_dir.mkdir(parents=True, exist_ok=True)
     args.start_epoch = max(args.epochs - 10, 0)  # Only evaluate the last 10 epochs
