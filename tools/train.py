@@ -58,8 +58,8 @@ def parse_config():
     parser.add_argument('--unlabeled_weight', type=float, default=1.0)
     parser.add_argument('--unlabeled_supervise_cls', action='store_true', default=True)
     parser.add_argument('--unlabeled_supervise_refine', action='store_true', default=True)
+    # parser.add_argument('--dynamic_ulb_loss_weight', action='store_true', default=False)
     parser.add_argument('--lr', type=float, default=0.0)
-
     parser.add_argument('--no_nms', action='store_true', default=False)
     parser.add_argument('--supervise_mode', type=int, default=0)
     parser.add_argument('--dbinfos', type=str, default='kitti_dbinfos_train.pkl')
@@ -85,6 +85,7 @@ def parse_config():
     cfg.MODEL.UNLABELED_WEIGHT = args.unlabeled_weight
     cfg.MODEL.NO_NMS = args.no_nms
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
+    # cfg.MODEL.DYNAMIC_ULB_LOSS_WEIGHT= args.dynamic_ulb_loss_weight
 
     rev = get_git_commit_number()
     args.extra_tag = args.extra_tag + "_" + str(rev)
