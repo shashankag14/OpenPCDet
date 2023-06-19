@@ -1,5 +1,6 @@
+import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
@@ -11,7 +12,6 @@ class PVRCNNHead(RoIHeadTemplate):
         super().__init__(num_class=num_class, model_cfg=model_cfg,
                          predict_boxes_when_training=predict_boxes_when_training)
         self.model_cfg = model_cfg
-
         self.roi_grid_pool_layer, num_c_out = pointnet2_stack_modules.build_local_aggregation_module(
             input_channels=input_channels, config=self.model_cfg.ROI_GRID_POOL
         )
@@ -44,6 +44,13 @@ class PVRCNNHead(RoIHeadTemplate):
         self.init_weights(weight_init='xavier')
 
         self.print_loss_when_eval = False
+        self.class_dict = {1:'Car', 2 :'Ped', 3:'Cyc'}
+        self.src_prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.target_prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.src_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.target_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.momentum = self.model_cfg.PROTOTYPE.MOMENTUM
+        self.start_iter = self.model_cfg.PROTOTYPE.START_ITER
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -159,6 +166,19 @@ class PVRCNNHead(RoIHeadTemplate):
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1).\
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+        
+        batch_dict['pooled_features'] =  pooled_features.view(batch_dict['batch_size'],batch_dict['roi_labels'].shape[1],-1, grid_size, grid_size, grid_size)
+        batch_dict['pooled_features_lbl'] = batch_dict['pooled_features'][batch_dict['labeled_inds']]
+        batch_dict['pooled_features_ulb'] =  batch_dict['pooled_features'][batch_dict['unlabeled_inds']]
+
+
+        if not batch_dict['module_type'] == 'Teacher':
+            if batch_dict['module_type'] == 'StudentViewA':
+                self.src_prototypeViewA,self.target_prototypeViewA = self.calc_prototype(batch_dict,enableViewA=True)
+            else:
+                self.src_prototype,self.target_prototype = self.calc_prototype(batch_dict)
+        
+
 
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
@@ -178,3 +198,35 @@ class PVRCNNHead(RoIHeadTemplate):
             self.forward_ret_dict = targets_dict
 
         return batch_dict
+
+
+    def calc_prototype(self,batch_dict,enableViewA=False):
+        if enableViewA: # weakly augmented through Student
+            src_prototype = self.src_prototypeViewA
+            tar_prototype = self.target_prototypeViewA
+        else: # strongly augmented  through Student
+            src_prototype = self.src_prototype
+            tar_prototype = self.target_prototype
+        # Generate Source classwise prototype ()
+        for i in range(1, len(self.class_dict)+1):
+            cls_mask = batch_dict['roi_labels'][batch_dict['labeled_inds']] == i
+            key = self.class_dict[i]
+            cur_proto = (batch_dict['pooled_features'][batch_dict['labeled_inds']][cls_mask]).mean(dim=0)
+            if batch_dict['cur_iteration']< self.start_iter:
+                src_prototype[key] = cur_proto
+            else :
+                src_prototype[key] = self.momentum * src_prototype[key] + (1 - self.momentum) * cur_proto
+        
+        #Generate Target classwise prototype ()
+        for i in range(1, len(self.class_dict)+1):
+            cls_mask = batch_dict['roi_labels'][batch_dict['unlabeled_inds']] == i
+            key = self.class_dict[i]
+            cur_proto = (batch_dict['pooled_features'][batch_dict['unlabeled_inds']][cls_mask]).mean(dim=0)
+            if batch_dict['cur_iteration']< self.start_iter:
+               tar_prototype[key] = cur_proto
+            else :
+               tar_prototype[key] = self.momentum *tar_prototype[key] + (1 - self.momentum) * cur_proto   
+        return src_prototype,tar_prototype
+
+        
+# TODO - Refactor to make prototype class with src, viewA, viewB as objects

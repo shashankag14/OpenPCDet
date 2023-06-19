@@ -1,12 +1,18 @@
 import os
+import pickle
 
 import torch
 import copy
+import torch.nn.functional as F
 
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from .detector3d_template import Detector3DTemplate
 from.pv_rcnn import PVRCNN
+# from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
+from torchmetrics.collections import MetricCollection
+import torch.distributed as dist
+# from visual_utils import visualize_utils as V
 
 def _mean(tensor_list):
     tensor = torch.cat(tensor_list)
@@ -14,22 +20,129 @@ def _mean(tensor_list):
     mean = tensor.mean() if len(tensor) > 0 else torch.tensor([float('nan')])
     return mean
 
+def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
+    new_dict = {}
+    for k in list_of_dicts[0].keys():
+        vals = []
+        for i in range(len(list_of_dicts)):
+            vals.append(list_of_dicts[i][k])
+        agg_vals = torch.cat(vals, dim=0) if agg_mode == 'cat' else torch.stack(vals, dim=0)
+        new_dict[k] = agg_vals
+    return new_dict
+
+
+def _to_list_of_dicts(dict_of_tensors, batch_size):
+    new_list = []
+    for batch_index in range(batch_size):
+        inner_dict = {}
+        for key in dict_of_tensors.keys():
+            assert dict_of_tensors[key].shape[0] == batch_size
+            inner_dict[key] = dict_of_tensors[key][batch_index]
+        new_list.append(inner_dict)
+
+    return new_list
+
+
+def _mean_and_var(batch_dict_a, batch_dict_b, unlabeled_inds, keys=()):
+    # !!! Note that the function is inplace !!!
+    if isinstance(batch_dict_a, dict) and isinstance(batch_dict_b, dict):
+        for k in keys:
+            batch_dict_mean_k = torch.zeros_like(batch_dict_a[k])
+            batch_dict_emas = torch.stack([batch_dict_a[k][unlabeled_inds], batch_dict_b[k][unlabeled_inds]], dim=-1)
+            batch_dict_mean_k[unlabeled_inds] = torch.mean(batch_dict_emas, dim=-1)
+            batch_dict_a[k + '_mean'] = batch_dict_mean_k
+            batch_dict_var_k = torch.zeros_like(batch_dict_a[k])
+            batch_dict_var_k[unlabeled_inds] = torch.var(batch_dict_emas, dim=-1)
+            batch_dict_a[k + '_var'] = batch_dict_var_k
+
+    elif isinstance(batch_dict_a, list) and isinstance(batch_dict_b, list):
+        for ind in unlabeled_inds:
+            for k in keys:
+                batch_dict_emas = torch.stack([batch_dict_a[ind][k], batch_dict_b[ind][k]], dim=-1)
+                batch_dict_a[ind][k + '_mean'] = torch.mean(batch_dict_emas, dim=-1)
+                batch_dict_a[ind][k + '_var'] = torch.var(batch_dict_emas, dim=-1)
+    else:
+        raise TypeError
+
+def _normalize_scores(batch_dict, score_keys=('batch_cls_preds',)):
+    # !!! Note that the function is inplace !!!
+    assert all([key in ['batch_cls_preds', 'roi_scores'] for key in score_keys])
+    for score_key in score_keys:
+        if score_key == 'batch_cls_preds':
+            if not batch_dict['cls_preds_normalized']:
+                batch_dict[score_key] = torch.sigmoid(batch_dict[score_key])
+                batch_dict['cls_preds_normalized'] = True
+        else:
+            batch_dict[score_key] = torch.sigmoid(batch_dict[score_key])
+
+# TODO(farzad) should be tested and debugged
+def _weighted_mean(batch_dict_a, batch_dict_b, unlabeled_inds, score_key='batch_cls_preds', keys=()):
+    assert score_key in ['batch_cls_preds', 'roi_scores']
+    _normalize_scores(batch_dict_a, score_keys=(score_key,))
+    _normalize_scores(batch_dict_b, score_keys=(score_key,))
+    scores_a = batch_dict_a[score_key][unlabeled_inds]
+    scores_b = batch_dict_b[score_key][unlabeled_inds]
+    weights = scores_a / (scores_a + scores_b)
+
+    for k in keys:
+        batch_dict_mean_k = torch.zeros_like(batch_dict_a[k])
+        batch_dict_mean_k[unlabeled_inds] = weights * batch_dict_a[k][unlabeled_inds] + \
+                                          (1 - weights) * batch_dict_b[k][unlabeled_inds]
+        batch_dict_a[k + '_mean'] = batch_dict_mean_k
+
+# TODO(farzad) should be tested and debugged
+def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key='batch_cls_preds', keys=()):
+    # !!! Note that the function is inplace !!!
+    assert score_key in ['batch_cls_preds', 'roi_scores']
+    _normalize_scores(batch_dict_a, score_keys=(score_key,))
+    _normalize_scores(batch_dict_b, score_keys=(score_key,))
+    batch_dict_cat = torch.stack([batch_dict_a[score_key], batch_dict_b[score_key]], dim=-1)
+    max_inds = torch.argmax(batch_dict_cat, dim=-1)
+    for key in keys:
+        batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
+
+# TODO(farzad) refactor this with global registry, accessible in different places, not via passing through batch_dict
+class MetricRegistry(object):
+    def __init__(self, **kwargs):
+        self._tag_metrics = {}
+        self.dataset = kwargs.get('dataset', None)
+        self.cls_bg_thresh = kwargs.get('cls_bg_thresh', None)
+        self.model_cfg = kwargs.get('model_cfg', None)
+    def get(self, tag=None):
+        if tag is None:
+            tag = 'default'
+        if tag in self._tag_metrics.keys():
+            metric = self._tag_metrics[tag]
+        else:
+            kitti_eval_metric = KITTIEvalMetrics(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            pred_qual_metric = PredQualityMetrics(tag=tag, dataset=self.dataset, cls_bg_thresh=self.cls_bg_thresh, config=self.model_cfg)
+            metric = MetricCollection({"kitti_eval_metric": kitti_eval_metric,
+                                       "pred_quality_metric": pred_qual_metric})
+            self._tag_metrics[tag] = metric
+        return metric
+
+    def tags(self):
+        return self._tag_metrics.keys()
+
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         # something changes so need deep copy
         model_cfg_copy = copy.deepcopy(model_cfg)
         dataset_copy = copy.deepcopy(dataset)
-        self.pv_rcnn = PVRCNN(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
 
+        self.pv_rcnn = PVRCNN(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
         self.pv_rcnn_ema = PVRCNN(model_cfg=model_cfg_copy, num_class=num_class, dataset=dataset_copy)
+
         for param in self.pv_rcnn_ema.parameters():
             param.detach_()
         self.add_module('pv_rcnn', self.pv_rcnn)
         self.add_module('pv_rcnn_ema', self.pv_rcnn_ema)
 
-        # self.module_list = self.build_networks()
-        # self.module_list_ema = self.build_networks()
+        # Initialize pv_rcnn and pv_rcnn_ema the same way
+        pv_rcnn_weights = self.pv_rcnn.state_dict()
+        self.pv_rcnn_ema.load_state_dict(pv_rcnn_weights)
+
         self.thresh = model_cfg.THRESH
         self.sem_thresh = model_cfg.SEM_THRESH
         self.unlabeled_supervise_cls = model_cfg.UNLABELED_SUPERVISE_CLS
@@ -37,13 +150,30 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
+        vals_to_store = []
+        self.val_dict = {val: [] for val in vals_to_store}
+        self.classes = ['Car','Ped','Cyc']
+        self.ema_template= {val: [] for val in self.classes}
+        self.updated_template = {val: [] for val in self.classes}
+        # with open('ema_sh4468_0.9.pkl','rb') as f:
+        #     self.rcnn_features = pickle.loads(f.read())
+        # rcnn_sh_mean = []
+        # for cls in self.classes:
+        #     avg = "mean"
+        #     param = "sh"
+        #     rcnn_sh_mean.append(self.rcnn_features[cls][avg][param].unsqueeze(dim=0))
+        # self.rcnn_sh_mean = torch.stack(rcnn_sh_mean)
+
 
     def forward(self, batch_dict):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
+            batch_dict['labeled_inds'] = labeled_inds
             unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
+            batch_dict['unlabeled_inds'] = unlabeled_inds
             batch_dict_ema = {}
+            batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
             keys = list(batch_dict.keys())
             for k in keys:
                 if k + '_ema' in keys:
@@ -53,15 +183,32 @@ class PVRCNN_SSL(Detector3DTemplate):
                 else:
                     batch_dict_ema[k] = batch_dict[k]
 
+            batch_dict_viewA = copy.deepcopy(batch_dict_ema) # RCNN 
+            batch_dict_ema['module_type'] = 'Teacher' # teacher WeakAug
+            batch_dict_viewA['module_type'] = 'StudentViewA' # WeakAug
+            batch_dict['module_type'] = 'StudentViewB' # Strong Aug
+
             with torch.no_grad():
                 # self.pv_rcnn_ema.eval()  # Important! must be in train mode
                 for cur_module in self.pv_rcnn_ema.module_list:
                     try:
                         batch_dict_ema = cur_module(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True)
+                        # if 'pooled_features' in batch_dict_ema.keys():
+                        #     batch_dict['rois_ema'] = batch_dict_ema['rois'].detach().clone()
+                        #     batch_dict['roi_scores_ema'] = batch_dict_ema['roi_scores'].detach().clone()
+                        #     batch_dict['roi_labels_ema'] = batch_dict_ema['roi_labels'].detach().clone()
+                        #     batch_dict['src_prototype'] +=  batch_dict_ema['pooled_features'][batch_dict['labeled_inds']].mean()
+                        #     batch_dict['src_prototype_car'] += batch_dict_ema['src_prototype'][batch_dict['roi_labels_ema'] == 1].mean()
+                        #     batch_dict['src_prototype_ped'] += batch_dict_ema['src_prototype'][batch_dict['roi_labels_ema'] == 2].mean()
+                        #     batch_dict['src_prototype_cyc'] += batch_dict_ema['src_prototype'][batch_dict['roi_labels_ema'] == 3].mean()
+
                     except:
                         batch_dict_ema = cur_module(batch_dict_ema)
+
                 pred_dicts, recall_dicts = self.pv_rcnn_ema.post_processing(batch_dict_ema,
                                                                             no_recall_dict=True, override_thresh=0.0, no_nms=self.no_nms)
+                
+                # src_prototype = src_prototype[labeled_inds, ...]
 
                 pseudo_boxes = []
                 pseudo_scores = []
@@ -107,7 +254,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         max_pseudo_box_num = pseudo_box.shape[0]
                     # pseudo_scores.append(pseudo_score)
                     # pseudo_labels.append(pseudo_label)
-
+                
                 max_box_num = batch_dict['gt_boxes'].shape[1]
 
                 # assert max_box_num >= max_pseudo_box_num
@@ -202,13 +349,24 @@ class PVRCNN_SSL(Detector3DTemplate):
                         pseudo_fgs.append(nan)
 
             for cur_module in self.pv_rcnn.module_list:
-                batch_dict = cur_module(batch_dict)
-
+                batch_dict =  cur_module(batch_dict) # calculate + view B (strong aug ulb) prototypes here
+            
+            
             disp_dict = {}
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
-
+            
+            ##MCL losses
+# Source prototypes calculated in below snippet. Pooled_features collected from RCNN of student
+            with torch.no_grad():
+                for cur_module in self.pv_rcnn.module_list:
+                    try:
+                        batch_dict_viewA = cur_module(batch_dict_viewA, disable_gt_roi_when_pseudo_labeling=True) # PL matching disabled. calculation of weak aug features
+                    except:    
+                        batch_dict_viewA = cur_module(batch_dict_viewA)
+            
+            inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss()
             
             if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
                 if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:
@@ -240,7 +398,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             else:
                 loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
 
-            loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
+            loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box + inter_domain_loss
+            
             tb_dict_ = {}
             for key in tb_dict.keys():
                 if 'loss' in key:

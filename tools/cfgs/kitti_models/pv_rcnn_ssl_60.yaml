@@ -3,7 +3,7 @@ CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset_ssl.yaml
     DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['placeholder']
+        DISABLE_AUG_LIST: ['PLACEHOLDER']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
               USE_ROAD_PLANE: True
@@ -186,6 +186,10 @@ MODEL:
             NSAMPLE: [16, 16]
             POOL_METHOD: max_pool
 
+        PROTOTYPE:
+            MOMENTUM : 0.9
+            START_ITER : 20
+
         TARGET_CONFIG:
             BOX_CODER: ResidualCoder
             ROI_PER_IMAGE: 128
@@ -234,6 +238,7 @@ MODEL:
     SEM_THRESH: [0.2, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
+    STORE_SCORES_IN_PKL: False
     DYNAMIC_ULB_LOSS_WEIGHT:
         ENABLE: False
         START_WEIGHT: 1

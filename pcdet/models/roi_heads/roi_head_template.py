@@ -305,3 +305,16 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds[:, 0:3] += roi_xyz
         batch_box_preds = batch_box_preds.view(batch_size, -1, code_size)
         return batch_cls_preds, batch_box_preds
+    
+    def get_proto_inter_loss(self):
+        cls_map =  {0:'Car',1:'Ped',2:'Cyc'}
+        #TODO: self.src_prototype is a dict. calculate classwise CE
+        cos_viewA = []
+        cos_AB_T = []
+        for i in range(3):
+            cos_viewA.append( F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewA[cls_map[i]]))
+            cos_AB_T.append(F.cosine_similarity(self.target_prototype[cls_map[i]],self.target_prototypeViewA[cls_map[i]]))
+        cos_viewA = torch.stack(cos_viewA) #, device = self.src_prototypeViewA['Car'].device
+        cos_AB_T = torch.stack(cos_AB_T)
+        loss =  F.cross_entropy(cos_viewA,cos_AB_T)
+        return loss
