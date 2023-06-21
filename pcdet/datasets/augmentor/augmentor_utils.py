@@ -3,7 +3,7 @@ import math
 import copy
 from ...utils import common_utils
 from ...utils import box_utils
-
+import torch
 
 def random_flip_along_x(gt_boxes, points, enable_=None):
     """
@@ -89,8 +89,9 @@ def random_flip_along_x_bbox(gt_boxes, enables):
     """
     for i in range(len(enables)):
         if enables[i]:
-            gt_boxes[i, :, 1] = -gt_boxes[i, :, 1]
-            gt_boxes[i, :, 6] = -gt_boxes[i, :, 6]
+            valid_mask = torch.logical_not(torch.all(gt_boxes[i] == 0, dim=-1))
+            gt_boxes[i, valid_mask, 1] = -gt_boxes[i,valid_mask, 1]
+            gt_boxes[i, valid_mask, 6] = -gt_boxes[i, valid_mask, 6]
 
             # if gt_boxes.shape[2] > 7:
             #     gt_boxes[i, :, 8] = -gt_boxes[i, :, 8]
@@ -107,8 +108,9 @@ def random_flip_along_y_bbox(gt_boxes, enables):
     """
     for i in range(len(enables)):
         if enables[i]:
-            gt_boxes[i, :, 0] = -gt_boxes[i, :, 0]
-            gt_boxes[i, :, 6] = -(gt_boxes[i, :, 6] + np.pi)
+            valid_mask = torch.logical_not(torch.all(gt_boxes[i] == 0, dim=-1))
+            gt_boxes[i, valid_mask, 0] = -gt_boxes[i, valid_mask, 0]
+            gt_boxes[i, valid_mask, 6] = -(gt_boxes[i, valid_mask, 6] + np.pi)
 
             # if gt_boxes.shape[2] > 7:
             #     gt_boxes[i, :, 7] = -gt_boxes[i, :, 7]
@@ -126,8 +128,9 @@ def global_rotation_bbox(gt_boxes, rotations):
     """
     for i in range(len(rotations)):
         rotation = rotations[i:i+1]
-        gt_boxes[i, :, 0:3] = common_utils.rotate_points_along_z(gt_boxes[i:i+1, :, 0:3], rotation)[0]
-        gt_boxes[i, :, 6] += rotation
+        valid_mask = torch.logical_not(torch.all(gt_boxes[i] == 0, dim=-1))
+        gt_boxes[i, valid_mask, 0:3] = common_utils.rotate_points_along_z(gt_boxes[i:i+1,valid_mask , 0:3], rotation)[0]
+        gt_boxes[i, valid_mask, 6] += rotation
         # if gt_boxes.shape[2] > 7:
         #     gt_boxes[i, :, 7:9] = common_utils.rotate_points_along_z(
         #         np.hstack((gt_boxes[i, :, 7:9], np.zeros((gt_boxes.shape[1], 1))))[np.newaxis, :, :],
@@ -146,5 +149,6 @@ def global_scaling_bbox(gt_boxes, scales):
     Returns:
     """
     for i in range(len(scales)):
-        gt_boxes[i, :, :6] *= scales[i]
+        valid_mask = torch.logical_not(torch.all(gt_boxes[i] == 0, dim=-1))
+        gt_boxes[i, valid_mask, :6] *= scales[i]
     return gt_boxes
