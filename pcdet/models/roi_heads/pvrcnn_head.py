@@ -49,6 +49,7 @@ class PVRCNNHead(RoIHeadTemplate):
         self.target_prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.src_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.target_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.target_prototypeView_BA = {'Car': None, 'Ped' : None, 'Cyc' : None} #Corresponding prototype 
         self.momentum = self.model_cfg.PROTOTYPE.MOMENTUM
         self.start_iter = self.model_cfg.PROTOTYPE.START_ITER
 
@@ -91,7 +92,7 @@ class PVRCNNHead(RoIHeadTemplate):
         point_features = batch_dict['point_features']
 
         point_features = point_features * batch_dict['point_cls_scores'].view(-1, 1)
-
+        batch_dict["weighted_point_features"] = point_features
         global_roi_grid_points, local_roi_grid_points = self.get_global_grid_points_of_roi(
             rois, grid_size=self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         )  # (BxN, 6x6x6, 3)
@@ -147,7 +148,10 @@ class PVRCNNHead(RoIHeadTemplate):
         :param input_data: input dict
         :return:
         """
-
+        '''
+        if feature_augBA flag is set as true, we are already going to provide rois, point_features,
+        '''
+        # if batch_dict['feature_augBA'] == False: 
         # use test-time nms for pseudo label generation
         targets_dict = self.proposal_layer(
             batch_dict, nms_config=self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not disable_gt_roi_when_pseudo_labeling else 'TEST']
@@ -177,7 +181,6 @@ class PVRCNNHead(RoIHeadTemplate):
                 self.src_prototypeViewA,self.target_prototypeViewA = self.calc_prototype(batch_dict,enableViewA=True)
             else:
                 self.src_prototype,self.target_prototype = self.calc_prototype(batch_dict)
-        
 
 
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
@@ -199,7 +202,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         return batch_dict
 
-
+#TODO - keep source meaned to classwise, unlabeled non-mean. Ablation  mean
     def calc_prototype(self,batch_dict,enableViewA=False):
         if enableViewA: # weakly augmented through Student
             src_prototype = self.src_prototypeViewA
@@ -212,7 +215,7 @@ class PVRCNNHead(RoIHeadTemplate):
             cls_mask = batch_dict['roi_labels'][batch_dict['labeled_inds']] == i
             key = self.class_dict[i]
             cur_proto = (batch_dict['pooled_features'][batch_dict['labeled_inds']][cls_mask]).mean(dim=0)
-            if batch_dict['cur_iteration']< self.start_iter:
+            if batch_dict['cur_iteration']< self.start_iter: 
                 src_prototype[key] = cur_proto
             else :
                 src_prototype[key] = self.momentum * src_prototype[key] + (1 - self.momentum) * cur_proto
@@ -228,5 +231,7 @@ class PVRCNNHead(RoIHeadTemplate):
                tar_prototype[key] = self.momentum *tar_prototype[key] + (1 - self.momentum) * cur_proto   
         return src_prototype,tar_prototype
 
-        
+    def proto_WeakB(self,batch_dict):
+            return self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
+
 # TODO - Refactor to make prototype class with src, viewA, viewB as objects

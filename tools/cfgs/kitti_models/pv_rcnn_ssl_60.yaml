@@ -3,7 +3,7 @@ CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset_ssl.yaml
     DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['PLACEHOLDER']
+        DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
               USE_ROAD_PLANE: True
@@ -160,7 +160,7 @@ MODEL:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
         ENABLE_EVAL: True
-        METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering, pl_gt_metrics_after_filtering]
+        METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering ] #pl_gt_metrics_after_filtering
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]

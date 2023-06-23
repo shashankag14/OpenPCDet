@@ -131,24 +131,24 @@ class PVRCNN_SSL(Detector3DTemplate):
 
 
             """PL metrics after filtering"""
-            if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
-                if 'pl_gt_metrics_after_filtering' in self.model_cfg.ROI_HEAD.METRICS_PRED_TYPES:
+            # if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
+                # if 'pl_gt_metrics_after_filtering' in self.model_cfg.ROI_HEAD.METRICS_PRED_TYPES:
 
-                    ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
-                    pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
-                    metric_inputs = {'preds': pseudo_boxes_list, 'pred_scores': pseudo_scores, 'roi_scores': pseudo_sem_scores,
-                             'ground_truths': ori_unlabeled_boxes_list}
+                #     ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
+                #     pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
+                #     metric_inputs = {'preds': pseudo_boxes_list, 'pred_scores': pseudo_scores, 'roi_scores': pseudo_sem_scores,
+                #              'ground_truths': ori_unlabeled_boxes_list}
                     
-                    tag = f'pl_gt_metrics_after_filtering'
-                    metrics = self.metric_registry.get(tag)
-                    metrics.update(**metric_inputs)
+                #     tag = f'pl_gt_metrics_after_filtering'
+                #     metrics = self.metric_registry.get(tag)
+                #     metrics.update(**metric_inputs)
 
             batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict =  cur_module(batch_dict) # calculate view B (strong aug ulb) prototypes here
-            
+            #strongly augmented features inside batch_dict
             # For metrics calculation
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
             self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
@@ -161,78 +161,99 @@ class PVRCNN_SSL(Detector3DTemplate):
             
             ##MCL losses
 # Source prototypes calculated in below snippet. Pooled_features collected from RCNN of student
-            with torch.no_grad():
-                for cur_module in self.pv_rcnn.module_list:
-                    try:
-                        batch_dict_viewA = cur_module(batch_dict_viewA, disable_gt_roi_when_pseudo_labeling=True) # PL matching disabled. calculate view A + src prototypes here
-                    except:    
-                        batch_dict_viewA = cur_module(batch_dict_viewA)
-            
-            inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss()
-            
-            if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
-                if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:
 
-                    start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.START_WEIGHT
-                    end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_WEIGHT
-                    alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ALPHA
-                    step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.STEP_SIZE
+            if self.model_cfg.PROTO_INTER_LOSS.ENABLE: 
+                with torch.no_grad(): # (View A - weak aug) calculate weak ulb(trg_viewA) & weak lb(proto_src) prototypes here
+                    for cur_module in self.pv_rcnn.module_list:
+                        try:
+                            batch_dict_viewA = cur_module(batch_dict_viewA, disable_gt_roi_when_pseudo_labeling=True) 
+                        except:    
+                            batch_dict_viewA = cur_module(batch_dict_viewA)
 
-                    self.unlabeled_weight = min(start_weight + alpha * math.floor((batch_dict['cur_epoch'] - self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_EPOCH'))/step_size), end_weight)
-                    tb_dict['unlabeled_weight'] = self.unlabeled_weight            
+            # Correspondence between
+                    batch_dict_viewB = {}
+                    batch_dict['module_type'] = 'StudentViewB'
+                    batch_dict_viewB['unlabeled_inds'] = batch_dict['unlabeled_inds']
+                    batch_dict_viewB['rois'] = batch_dict['rois'].data.clone()
+                    batch_dict_viewB['roi_scores'] = batch_dict['roi_scores'].data.clone()
+                    batch_dict_viewB['roi_labels'] = batch_dict['roi_labels'].data.clone()
+                    batch_dict_viewB['has_class_labels'] = batch_dict['has_class_labels']
+                    batch_dict_viewB['batch_size'] = batch_dict['batch_size']
+                    batch_dict_viewB['point_features'] = batch_dict_viewA['point_features'].data.clone()
+                    batch_dict_viewB['point_coords'] = batch_dict_viewA['point_coords'].data.clone()
+                    batch_dict_viewB['point_cls_scores'] = batch_dict_viewA['point_cls_scores'].data.clone()
+
+                    batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds) #reverse strong augmented to weak augmented
+
+
+                    self.pv_rcnn.roi_head.proto_WeakB(batch_dict_viewB) # calculate trg_viewB_weak' here
+
+                    inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss()
+
+            else:
+                if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
+                    if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:
+
+                        start_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.START_WEIGHT
+                        end_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_WEIGHT
+                        alpha = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ALPHA
+                        step_size = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.STEP_SIZE
+
+                        self.unlabeled_weight = min(start_weight + alpha * math.floor((batch_dict['cur_epoch'] - self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('START_EPOCH'))/step_size), end_weight)
+                        tb_dict['unlabeled_weight'] = self.unlabeled_weight            
+                    else:
+                        self.unlabeled_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT')
+                
+                if not self.unlabeled_supervise_cls:
+                    loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
                 else:
-                    self.unlabeled_weight = self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.get('END_WEIGHT')
-            
-            if not self.unlabeled_supervise_cls:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
-            else:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum() + loss_rpn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
+                    loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum() + loss_rpn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
 
-            loss_rpn_box = loss_rpn_box[labeled_inds, ...].sum() + loss_rpn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
-            loss_point = loss_point[labeled_inds, ...].sum()
-            # Adding supervision of objectness score for unlabeled data as an ablation (not a part of original 3diou, default is False)
-            if self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
-                loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum() + loss_rcnn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
-            else:
-                loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum()
-            if not self.unlabeled_supervise_refine:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum()
-            else:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
-
-            if self.model_cfg.PROTO_INTER_LOSS.ENABLE:
-                loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box + inter_domain_loss
-            else : 
-                loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
-            tb_dict_ = {}
-            for key in tb_dict.keys():
-                if 'loss' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
-                elif 'acc' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
-                elif 'point_pos_num' in key:
-                    tb_dict_[key + "_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                loss_rpn_box = loss_rpn_box[labeled_inds, ...].sum() + loss_rpn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
+                loss_point = loss_point[labeled_inds, ...].sum()
+                # Adding supervision of objectness score for unlabeled data as an ablation (not a part of original 3diou, default is False)
+                if self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
+                    loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum() + loss_rcnn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
                 else:
-                    tb_dict_[key] = tb_dict[key]
+                    loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum()
+                if not self.unlabeled_supervise_refine:
+                    loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum()
+                else:
+                    loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
+
+                if self.model_cfg.PROTO_INTER_LOSS.ENABLE:
+                    loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box + inter_domain_loss
+                else : 
+                    loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
+                tb_dict_ = {}
+                for key in tb_dict.keys():
+                    if 'loss' in key:
+                        tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                        tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    elif 'acc' in key:
+                        tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                        tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    elif 'point_pos_num' in key:
+                        tb_dict_[key + "_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                        tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    else:
+                        tb_dict_[key] = tb_dict[key]
 
 
-            for key in self.metric_registry.tags():
-                metrics = self.compute_metrics(tag=key)
-                tb_dict_.update(metrics)
+                for key in self.metric_registry.tags():
+                    metrics = self.compute_metrics(tag=key)
+                    tb_dict_.update(metrics)
 
-            if dist.is_initialized():
-                rank = os.getenv('RANK')
-                tb_dict_[f'bs_rank_{rank}'] = int(batch_dict['gt_boxes'].shape[0])
-            else:
-                tb_dict_[f'bs'] = int(batch_dict['gt_boxes'].shape[0])
+                if dist.is_initialized():
+                    rank = os.getenv('RANK')
+                    tb_dict_[f'bs_rank_{rank}'] = int(batch_dict['gt_boxes'].shape[0])
+                else:
+                    tb_dict_[f'bs'] = int(batch_dict['gt_boxes'].shape[0])
 
-            ret_dict = {
-                'loss': loss
-            }
-            return ret_dict, tb_dict_, disp_dict
+                ret_dict = {
+                    'loss': loss
+                }
+                return ret_dict, tb_dict_, disp_dict
 
         else:
             for cur_module in self.pv_rcnn.module_list:
@@ -251,13 +272,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pred_dict, unlabeled_inds)
             pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
                             for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
+            
+            pseudo_boxes_numel = [pseudo_box.numel() for pseudo_box in pseudo_boxes]
+            if 0 in pseudo_boxes_numel:
+                print(" 0 no. element pseudo_box")
 
             # Making consistent # of pseudo boxes in each batch
             # NOTE: Need to store them in batch_dict in a new key, which can be removed later
             input_dict['pseudo_boxes_prefilter'] = torch.zeros_like(input_dict['gt_boxes'])
             self._fill_with_pseudo_labels(input_dict, pseudo_boxes, unlabeled_inds, labeled_inds,
                                           key='pseudo_boxes_prefilter')
-
+            
             # apply student's augs on teacher's pseudo-boxes (w/o filtered)
             batch_dict = self.apply_augmentation(input_dict, input_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
 

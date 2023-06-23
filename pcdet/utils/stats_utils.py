@@ -119,7 +119,7 @@ class PredQualityMetrics(Metric):
                     # Using kitti test class-wise fg threshold instead of thresholds used during train.
                     classwise_fg_thresh = self.min_overlaps[cind]
                     fg_mask = preds_iou_max >= classwise_fg_thresh
-                    bg_mask = preds_iou_max <= self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+                    bg_mask = preds_iou_max <= self.config.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
                     uc_mask = ~(bg_mask | fg_mask)  # uncertain mask
 
                     cc_fg_mask = fg_mask & cc_mask
@@ -244,7 +244,7 @@ class KITTIEvalMetrics(Metric):
     full_state_update: bool = False
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.reset_state_interval = kwargs.get('reset_state_interval', 64)
+        self.reset_state_interval = kwargs.get('reset_state_interval', 2)
         self.tag = kwargs.get('tag', None)
         self.dataset = kwargs.get('dataset', None)
         current_classes = self.dataset.class_names
@@ -305,6 +305,7 @@ class KITTIEvalMetrics(Metric):
             num_gts = valid_gts_mask.sum()
             num_preds = valid_preds_mask.sum()
             overlap= torch.cuda.FloatTensor(torch.Size((num_preds, num_gts))).zero_()  # (N, M)
+            # overlap= torch.cuda.FloatTensor(torch.Size((num_preds.item(), num_gts.item()))).zero_()  # (N, M)
             if num_gts > 0 and num_preds > 0:
                 overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
 
@@ -386,13 +387,17 @@ class KITTIEvalMetrics(Metric):
                 pr_cls[cls_name] = num_ulb_cls / (ulb_lbl_ratio * num_lbl_cls)
 
             cls_dist = {}
-            for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
-                cls_dist[cls_name+'_lbl'] = lbl_cls_counter[cls_name] / sum(lbl_cls_counter.values())
-                cls_dist[cls_name+'_ulb'] = ulb_cls_counter[cls_name] / sum(ulb_cls_counter.values())
-            lbl_dist = torch.tensor(list(lbl_cls_counter.values())) / sum(lbl_cls_counter.values())
-            ulb_dist = torch.tensor(list(ulb_cls_counter.values())) / sum(ulb_cls_counter.values())
+            if sum(lbl_cls_counter.values())==0 or sum(ulb_cls_counter.values())==0:
+                kl_div=0
+                print("0 encountered")
+            else:
+                for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                    cls_dist[cls_name+'_lbl'] = lbl_cls_counter[cls_name] / sum(lbl_cls_counter.values())
+                    cls_dist[cls_name+'_ulb'] = ulb_cls_counter[cls_name] / sum(ulb_cls_counter.values())
+                lbl_dist = torch.tensor(list(lbl_cls_counter.values())) / sum(lbl_cls_counter.values())
+                ulb_dist = torch.tensor(list(ulb_cls_counter.values())) / sum(ulb_cls_counter.values())
 
-            kl_div = F.kl_div(ulb_dist.log().unsqueeze(0), lbl_dist.unsqueeze(0), reduction="batchmean").item()
+                kl_div = F.kl_div(ulb_dist.log().unsqueeze(0), lbl_dist.unsqueeze(0), reduction="batchmean").item()
             kitti_eval_metrics['class_distribution'] = cls_dist
             kitti_eval_metrics['kl_div'] = kl_div
             kitti_eval_metrics['PR'] = pr_cls
