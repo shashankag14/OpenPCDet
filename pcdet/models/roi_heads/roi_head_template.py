@@ -459,8 +459,8 @@ class RoIHeadTemplate(nn.Module):
         cos_viewB = []
         for i in range(3):
             cos_viewA.append(F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewA[cls_map[i]]))
-            cos_viewB.append(F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewB[cls_map[i]]))
+            cos_viewB.append(F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewBA[cls_map[i]]))
         cos_viewA = torch.stack(cos_viewA)
         cos_viewB= torch.stack(cos_viewB)
-        loss =  F.kl_div(cos_viewA, cos_viewB, reduction="batchmean")
+        loss =  F.kl_div(cos_viewA, cos_viewB)
         return loss

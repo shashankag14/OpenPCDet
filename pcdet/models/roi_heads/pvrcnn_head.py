@@ -45,11 +45,12 @@ class PVRCNNHead(RoIHeadTemplate):
 
         self.print_loss_when_eval = False
         self.class_dict = {1:'Car', 2 :'Ped', 3:'Cyc'}
-        self.src_prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
-        self.target_prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.src_prototypeViewB = {'Car': None, 'Ped' : None, 'Cyc' : None}
+        self.target_prototypeViewB = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.src_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.target_prototypeViewA = {'Car': None, 'Ped' : None, 'Cyc' : None}
-        self.target_prototypeView_BA = {'Car': None, 'Ped' : None, 'Cyc' : None} #Corresponding prototype 
+        self.source_prototypeViewBA = {'Car': None, 'Ped' : None, 'Cyc' : None} 
+        self.target_prototypeViewBA = {'Car': None, 'Ped' : None, 'Cyc' : None} #Corresponding prototype 
         self.momentum = self.model_cfg.PROTOTYPE.MOMENTUM
         self.start_iter = self.model_cfg.PROTOTYPE.START_ITER
 
@@ -151,7 +152,7 @@ class PVRCNNHead(RoIHeadTemplate):
         '''
         if feature_augBA flag is set as true, we are already going to provide rois, point_features,
         '''
-        # if batch_dict['feature_augBA'] == False: 
+        # if batch_dict['module_type'] != "StudentViewB": 
         # use test-time nms for pseudo label generation
         targets_dict = self.proposal_layer(
             batch_dict, nms_config=self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not disable_gt_roi_when_pseudo_labeling else 'TEST']
@@ -178,10 +179,12 @@ class PVRCNNHead(RoIHeadTemplate):
 
         if not batch_dict['module_type'] == 'Teacher':
             if batch_dict['module_type'] == 'StudentViewA':
-                self.src_prototypeViewA,self.target_prototypeViewA = self.calc_prototype(batch_dict,enableViewA=True)
+                self.src_prototypeViewA,self.target_prototypeViewA = self.calc_prototype(batch_dict)
+            elif batch_dict['module_type'] == 'Student': 
+                self.src_prototypeB,self.target_prototypeViewB = self.calc_prototype(batch_dict)
             else:
-                self.src_prototype,self.target_prototype = self.calc_prototype(batch_dict)
-
+                print(batch_dict['module_type'])
+                raise ValueError("Incorrect prototype calculation!")
 
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
@@ -203,13 +206,21 @@ class PVRCNNHead(RoIHeadTemplate):
         return batch_dict
 
 #TODO - keep source meaned to classwise, unlabeled non-mean. Ablation  mean
-    def calc_prototype(self,batch_dict,enableViewA=False):
-        if enableViewA: # weakly augmented through Student
-            src_prototype = self.src_prototypeViewA
+    def calc_prototype(self,batch_dict):
+        if batch_dict['module_type'] == "Student": # Strong augmentation through Student
+            src_prototype = self.src_prototypeViewB # Currently unused, TODO : ablation
+            tar_prototype = self.target_prototypeViewB #strong target prototype
+
+        elif batch_dict['module_type']=="StudentViewA": # Weak augmentation through Student
+            src_prototype = self.src_prototypeViewA # source prototype
             tar_prototype = self.target_prototypeViewA
-        else: # strongly augmented  through Student
-            src_prototype = self.src_prototype
-            tar_prototype = self.target_prototype
+
+        elif batch_dict['module_type']=="StudentViewB": # ViewB proposals, weak augmented, passed through Student. Maintains correspondence
+            src_prototype = self.source_prototypeViewBA
+            tar_prototype = self.target_prototypeViewBA   # weak target prototype
+        else :
+            raise ValueError("Incorrect prototype calculation!")
+
         # Generate Source classwise prototype ()
         for i in range(1, len(self.class_dict)+1):
             cls_mask = batch_dict['roi_labels'][batch_dict['labeled_inds']] == i
@@ -232,6 +243,18 @@ class PVRCNNHead(RoIHeadTemplate):
         return src_prototype,tar_prototype
 
     def proto_WeakB(self,batch_dict):
-            return self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
+        assert batch_dict['module_type'] == "StudentViewB"
+        pooled_features = self.roi_grid_pool(batch_dict) 
+        grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+        batch_size_rcnn = pooled_features.shape[0]
+        pooled_features = pooled_features.permute(0, 2, 1).\
+            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+    
+        batch_dict['pooled_features'] =  pooled_features.view(batch_dict['batch_size'],batch_dict['roi_labels'].shape[1],-1, grid_size, grid_size, grid_size)
+        batch_dict['pooled_features_lbl'] = batch_dict['pooled_features'][batch_dict['labeled_inds']]
+        batch_dict['pooled_features_ulb'] =  batch_dict['pooled_features'][batch_dict['unlabeled_inds']]
 
-# TODO - Refactor to make prototype class with src, viewA, viewB as objects
+        self.source_prototypeViewBA, self.target_prototypeViewBA = self.calc_prototype(batch_dict) # (BxN, 6x6x6, C)
+
+        return batch_dict
+
