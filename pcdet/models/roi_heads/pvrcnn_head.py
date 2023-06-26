@@ -178,10 +178,10 @@ class PVRCNNHead(RoIHeadTemplate):
 
 
         if not batch_dict['module_type'] == 'Teacher':
-            if batch_dict['module_type'] == 'StudentViewA':
+            if batch_dict['module_type'] == 'Student': 
+                self.src_prototypeB,self.target_prototypeViewB = self.calc_prototype(batch_dict)            
+            elif batch_dict['module_type'] == 'StudentViewA':
                 self.src_prototypeViewA,self.target_prototypeViewA = self.calc_prototype(batch_dict)
-            elif batch_dict['module_type'] == 'Student': 
-                self.src_prototypeB,self.target_prototypeViewB = self.calc_prototype(batch_dict)
             else:
                 print(batch_dict['module_type'])
                 raise ValueError("Incorrect prototype calculation!")

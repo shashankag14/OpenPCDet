@@ -29,6 +29,8 @@ DATA_CONFIG:
             - NAME: random_world_scaling
               WORLD_SCALE_RANGE: [0.95, 1.05]
 
+
+
 MODEL:
     NAME: PVRCNN_SSL
 
@@ -252,7 +254,8 @@ MODEL:
     PROTO_INTER_LOSS:
         ENABLE : False
         WEIGHT : 1.0
-
+    PRETRAINED_MODEL:
+        ENABLE : False
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 1 #2

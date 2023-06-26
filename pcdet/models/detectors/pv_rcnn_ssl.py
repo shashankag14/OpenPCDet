@@ -62,10 +62,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             param.detach_()
         self.add_module('pv_rcnn', self.pv_rcnn)
         self.add_module('pv_rcnn_ema', self.pv_rcnn_ema)
-
-        # Initialize pv_rcnn with same weights as pv_rcnn
-        pv_rcnn_weights = self.pv_rcnn.state_dict()
-        self.pv_rcnn_ema.load_state_dict(pv_rcnn_weights)
+        self.pretrain = model_cfg.PRETRAINED_MODEL.ENABLE
+        if not self.pretrain: # Force Teacher and Student to same random initialization
+            pv_rcnn_weights = self.pv_rcnn.state_dict()
+            self.pv_rcnn_ema.load_state_dict(pv_rcnn_weights)
 
         self.thresh = model_cfg.THRESH
         self.sem_thresh = model_cfg.SEM_THRESH

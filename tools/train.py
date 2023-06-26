@@ -86,6 +86,10 @@ def parse_config():
     cfg.MODEL.UNLABELED_WEIGHT = args.unlabeled_weight
     cfg.MODEL.NO_NMS = args.no_nms
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
+    if args.pretrained_model is not None:
+        cfg.MODEL.PRETRAINED_MODEL.ENABLE = True
+    else:
+        cfg.MODEL.PRETRAINED_MODEL.ENABLE = False
     # cfg.MODEL.DYNAMIC_ULB_LOSS_WEIGHT= args.dynamic_ulb_loss_weight
 
     rev = get_git_commit_number()
