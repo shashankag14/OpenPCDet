@@ -246,7 +246,7 @@ class RoIHeadTemplate(nn.Module):
     def assign_targets(self, batch_dict):
         batch_size = batch_dict['batch_size']
         with torch.no_grad():
-            targets_dict = self.proposal_target_layer.forward(batch_dict)
+            targets_dict = self.proposal_target_layer.forward(batch_dict) #Subsampling ROIs
 
         rois = targets_dict['rois']  # (B, N, 7 + C)
         gt_of_rois = targets_dict['gt_of_rois']  # (B, N, 7 + C + 1)
@@ -452,15 +452,32 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds = batch_box_preds.view(batch_size, -1, code_size)
         return batch_cls_preds, batch_box_preds
     
-    def get_proto_inter_loss(self):
-        cls_map =  {0:'Car',1:'Ped',2:'Cyc'}
-        #TODO: self.src_prototype is a dict. calculate classwise CE
-        cos_viewA = []
-        cos_viewB = []
-        for i in range(3):
-            cos_viewA.append(F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewA[cls_map[i]]))
-            cos_viewB.append(F.cosine_similarity(self.src_prototypeViewA[cls_map[i]],self.target_prototypeViewBA[cls_map[i]]))
-        cos_viewA = torch.stack(cos_viewA)
-        cos_viewB= torch.stack(cos_viewB)
-        loss =  F.kl_div(cos_viewA, cos_viewB)
-        return loss
+    def get_proto_inter_loss(self, batch_dict_weak, batch_dict_strong):
+        cls_map =  {1:'Car', 2 :'Ped', 3:'Cyc'}
+        dev = batch_dict_weak["features_weak_ulb"][cls_map[1]].device
+
+        ## Is cosine similarity to be computed inside torch.no_grad() ? It is just a similarity measure
+        cos_weak_ulb_lb = torch.empty(len(cls_map), device=dev)
+        cos_strong_ulb_lb = torch.empty(len(cls_map), device=dev)
+
+        for idx, key in enumerate(range(1, len(cls_map) + 1)):
+            prototype = batch_dict_weak["prototype"][cls_map[key]].unsqueeze(0).to(device=dev)
+            features_weak_ulb = batch_dict_weak["features_weak_ulb"][cls_map[key]]
+            features_strong_ulb = batch_dict_strong["features_strong_ulb"][cls_map[key]]
+
+            repeated_prototype_weak = prototype.repeat(features_weak_ulb.shape[0], 1)
+            repeated_prototype_strong = prototype.repeat(features_strong_ulb.shape[0], 1)
+
+            cos_weak_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_weak, features_weak_ulb).mean()
+            cos_strong_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_strong, features_strong_ulb).mean()
+
+        entropy_weak = torch.sum(cos_weak_ulb_lb * (torch.log(cos_weak_ulb_lb + 1e-7)))
+        entropy_strong = torch.sum(cos_strong_ulb_lb * (torch.log(cos_strong_ulb_lb+ 1e-7)))
+        entropy_loss = torch.abs(entropy_strong - entropy_weak)
+
+        return entropy_loss
+
+        '''KL divergence takes an input and a gt variable. In our case , neither cos_weak nor cos_strong are exactly inputs nor gt.
+        Our objective is to reduce the uncertainty in feature space between ulb_lb_strong and ulb_lb_weak. A naive decision could be to minimize the differences between entropy B and entropy A.
+        A simple thing to do is to take entropy of each cosine distribution, and then compute L1 loss.
+'''

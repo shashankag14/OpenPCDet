@@ -102,7 +102,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict_viewA = copy.deepcopy(batch_dict_ema) # RCNN 
             batch_dict_ema['module_type'] = 'Teacher' # teacher WeakAug
             batch_dict['module_type'] = 'Student' # Strong Aug
-            batch_dict_viewA['module_type'] = 'StudentViewA' # WeakAug
+            batch_dict_viewA['module_type'] = 'WeakAug' # WeakAug
 
 
             with torch.no_grad():
@@ -157,21 +157,15 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
-            
-            ##MCL losses
-# Source prototypes calculated in below snippet. Pooled_features collected from RCNN of student
 
             if self.model_cfg.PROTO_INTER_LOSS.ENABLE: 
-                with torch.no_grad(): # (View A - weak aug) calculate weak ulb(trg_viewA) & weak lb(proto_src) prototypes here
-                    for cur_module in self.pv_rcnn.module_list:
-                        try:
-                            batch_dict_viewA = cur_module(batch_dict_viewA, disable_gt_roi_when_pseudo_labeling=True) 
-                        except:    
-                            batch_dict_viewA = cur_module(batch_dict_viewA)
+                with torch.no_grad(): 
+                    for cur_module in self.pv_rcnn.module_list:                 # weak augmentation
+                        batch_dict_viewA = cur_module(batch_dict_viewA) 
 
-            # Correspondence between
-                    batch_dict_viewB = {}
-                    batch_dict_viewB['module_type'] = 'StudentViewB'
+
+                    batch_dict_viewB = {}                                       #strong augmentation
+                    batch_dict_viewB['module_type'] = "StrongAug"
                     batch_dict_viewB['unlabeled_inds'] = batch_dict['unlabeled_inds']
                     batch_dict_viewB['cur_iteration'] = batch_dict['cur_iteration']
                     batch_dict_viewB['labeled_inds'] = batch_dict['labeled_inds']
@@ -184,12 +178,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_viewB['point_coords'] = batch_dict_viewA['point_coords'].data.clone()
                     batch_dict_viewB['point_cls_scores'] = batch_dict_viewA['point_cls_scores'].data.clone()
 
-                    batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds) #reverse strong augmented to weak augmented
-                    #batch_dict_viewB['module_type'] = 'StudentViewB'
+                    batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds)
+                    batch_dict_viewB = self.pv_rcnn.roi_head.get_strong_ulb_features(batch_dict_viewB) 
 
-                    batch_dict_viewB = self.pv_rcnn.roi_head.proto_WeakB(batch_dict_viewB) # calculate trg_viewB_weak' here
-
-                    inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss()
+                    inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss(batch_dict_viewA,batch_dict_viewB)
 
             if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
                 if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:

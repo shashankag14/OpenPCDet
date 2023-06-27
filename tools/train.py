@@ -88,6 +88,7 @@ def parse_config():
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
     if args.pretrained_model is not None:
         cfg.MODEL.PRETRAINED_MODEL.ENABLE = True
+        cfg.MODEL.ROI_HEAD.PROTOTYPE.START_ITER = 1
     else:
         cfg.MODEL.PRETRAINED_MODEL.ENABLE = False
     # cfg.MODEL.DYNAMIC_ULB_LOSS_WEIGHT= args.dynamic_ulb_loss_weight
