@@ -63,7 +63,6 @@ def parse_config():
     parser.add_argument('--no_nms', action='store_true', default=False)
     parser.add_argument('--supervise_mode', type=int, default=0)
     parser.add_argument('--dbinfos', type=str, default='kitti_dbinfos_train.pkl')
-    parser.add_argument('--proto_inter_loss', action='store_true', default = False)
 
     args = parser.parse_args()
 
