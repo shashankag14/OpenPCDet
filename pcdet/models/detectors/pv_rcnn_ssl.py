@@ -159,29 +159,35 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
             if self.model_cfg.PROTO_INTER_LOSS.ENABLE: 
-                with torch.no_grad(): 
-                    for cur_module in self.pv_rcnn.module_list:                 # weak augmentation
-                        batch_dict_viewA = cur_module(batch_dict_viewA) 
+                # with torch.no_grad():
+                '''
+                Enabling torch.no_grad sets all the requires_grad to be false
+                When loss.backward() is called, only then are all the updates done.
+ 
+                
+                '''
+                for cur_module in self.pv_rcnn.module_list:                 # weak augmentation
+                    batch_dict_viewA = cur_module(batch_dict_viewA) 
 
 
-                    batch_dict_viewB = {}                                       #strong augmentation
-                    batch_dict_viewB['module_type'] = "StrongAug"
-                    batch_dict_viewB['unlabeled_inds'] = batch_dict['unlabeled_inds']
-                    batch_dict_viewB['cur_iteration'] = batch_dict['cur_iteration']
-                    batch_dict_viewB['labeled_inds'] = batch_dict['labeled_inds']
-                    batch_dict_viewB['rois'] = batch_dict['rois'].data.clone()
-                    batch_dict_viewB['roi_scores'] = batch_dict['roi_scores'].data.clone()
-                    batch_dict_viewB['roi_labels'] = batch_dict['roi_labels'].data.clone()
-                    batch_dict_viewB['has_class_labels'] = batch_dict['has_class_labels']
-                    batch_dict_viewB['batch_size'] = batch_dict['batch_size']
-                    batch_dict_viewB['point_features'] = batch_dict_viewA['point_features'].data.clone()
-                    batch_dict_viewB['point_coords'] = batch_dict_viewA['point_coords'].data.clone()
-                    batch_dict_viewB['point_cls_scores'] = batch_dict_viewA['point_cls_scores'].data.clone()
+                batch_dict_viewB = {}                                       #strong augmentation
+                batch_dict_viewB['module_type'] = "StrongAug"
+                batch_dict_viewB['unlabeled_inds'] = batch_dict['unlabeled_inds']
+                batch_dict_viewB['cur_iteration'] = batch_dict['cur_iteration']
+                batch_dict_viewB['labeled_inds'] = batch_dict['labeled_inds']
+                batch_dict_viewB['rois'] = batch_dict['rois'].data.clone()
+                batch_dict_viewB['roi_scores'] = batch_dict['roi_scores'].data.clone()
+                batch_dict_viewB['roi_labels'] = batch_dict['roi_labels'].data.clone()
+                batch_dict_viewB['has_class_labels'] = batch_dict['has_class_labels']
+                batch_dict_viewB['batch_size'] = batch_dict['batch_size']
+                batch_dict_viewB['point_features'] = batch_dict_viewA['point_features'].data.clone()
+                batch_dict_viewB['point_coords'] = batch_dict_viewA['point_coords'].data.clone()
+                batch_dict_viewB['point_cls_scores'] = batch_dict_viewA['point_cls_scores'].data.clone()
 
-                    batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds)
-                    batch_dict_viewB = self.pv_rcnn.roi_head.get_strong_ulb_features(batch_dict_viewB) 
+                batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds)
+                batch_dict_viewB = self.pv_rcnn.roi_head.get_strong_ulb_features(batch_dict_viewB) 
 
-                    inter_domain_loss, tb_dict = self.pv_rcnn.roi_head.get_proto_inter_loss(batch_dict_viewA,batch_dict_viewB,tb_dict)
+                inter_domain_loss, tb_dict = self.pv_rcnn.roi_head.get_proto_inter_loss(batch_dict_viewA,batch_dict_viewB,tb_dict)
 
             if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
                 if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:
