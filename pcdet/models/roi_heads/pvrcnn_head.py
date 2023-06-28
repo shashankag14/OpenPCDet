@@ -214,6 +214,8 @@ class PVRCNNHead(RoIHeadTemplate):
                 feature_type ='pooled_features_lbl'
                 cls_mask = batch_dict['roi_labels'][batch_dict['labeled_inds']] == i
             current_features[self.class_dict[i]] = batch_dict[feature_type][cls_mask] # rois[cls],128,6,6,6
+            if current_features[self.class_dict[i]].numel() == 0:
+                current_features[self.class_dict[i]] = torch.zeros((1, 128, 6, 6, 6)).to(device=batch_dict['pooled_features'].device)
         for i in range(1, len(self.class_dict)+1):
             current_features[self.class_dict[i]] = current_features[self.class_dict[i]].view(current_features[self.class_dict[i]].shape[0],-1)
         return current_features

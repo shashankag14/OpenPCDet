@@ -452,7 +452,8 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds = batch_box_preds.view(batch_size, -1, code_size)
         return batch_cls_preds, batch_box_preds
     
-    def get_proto_inter_loss(self, batch_dict_weak, batch_dict_strong):
+    def get_proto_inter_loss(self,batch_dict_weak, batch_dict_strong,tb_dict=None,scalar=True):
+        tb_dict = {} if tb_dict is None else tb_dict
         cls_map =  {1:'Car', 2 :'Ped', 3:'Cyc'}
         dev = batch_dict_weak["features_weak_ulb"][cls_map[1]].device
 
@@ -471,11 +472,22 @@ class RoIHeadTemplate(nn.Module):
             cos_weak_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_weak, features_weak_ulb).mean()
             cos_strong_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_strong, features_strong_ulb).mean()
 
+        tb_dict["cos_src_ulb_weak_Car"] = cos_weak_ulb_lb[0]
+        tb_dict["cos_src_ulb_weak_Ped"] = cos_weak_ulb_lb[1]
+        tb_dict["cos_src_ulb_weak_Cyc"] = cos_weak_ulb_lb[2]
+
+        tb_dict["cos_src_ulb_strong_Car"] = cos_strong_ulb_lb[0]
+        tb_dict["cos_src_ulb_strong_Ped"] = cos_strong_ulb_lb[1]
+        tb_dict["cos_src_ulb_strong_Cyc"] = cos_strong_ulb_lb[2]
+
         entropy_weak = torch.sum(cos_weak_ulb_lb * (torch.log(cos_weak_ulb_lb + 1e-7)))
         entropy_strong = torch.sum(cos_strong_ulb_lb * (torch.log(cos_strong_ulb_lb+ 1e-7)))
         entropy_loss = torch.abs(entropy_strong - entropy_weak)
+        tb_dict["entropy_weak"] = entropy_weak
+        tb_dict["entropy_strong"] = entropy_strong
+        tb_dict["entropy_loss"] = entropy_loss
 
-        return entropy_loss
+        return entropy_loss, tb_dict
 
         '''KL divergence takes an input and a gt variable. In our case , neither cos_weak nor cos_strong are exactly inputs nor gt.
         Our objective is to reduce the uncertainty in feature space between ulb_lb_strong and ulb_lb_weak. A naive decision could be to minimize the differences between entropy B and entropy A.

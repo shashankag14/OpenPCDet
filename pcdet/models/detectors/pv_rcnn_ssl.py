@@ -181,7 +181,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_viewB = self.reverse_augmentation(batch_dict_viewB, batch_dict, unlabeled_inds)
                     batch_dict_viewB = self.pv_rcnn.roi_head.get_strong_ulb_features(batch_dict_viewB) 
 
-                    inter_domain_loss = self.pv_rcnn.roi_head.get_proto_inter_loss(batch_dict_viewA,batch_dict_viewB)
+                    inter_domain_loss, tb_dict = self.pv_rcnn.roi_head.get_proto_inter_loss(batch_dict_viewA,batch_dict_viewB,tb_dict)
 
             if self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.ENABLE:
                 if batch_dict['cur_epoch'] <  self.model_cfg.DYNAMIC_ULB_LOSS_WEIGHT.END_EPOCH:
@@ -217,9 +217,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box + inter_domain_loss
             else : 
                 loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
+
             tb_dict_ = {}
             for key in tb_dict.keys():
-                if 'loss' in key:
+                if 'loss' in key and key!= 'entropy_loss':
                     tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
                     tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 elif 'acc' in key:
