@@ -29,6 +29,8 @@ DATA_CONFIG:
             - NAME: random_world_scaling
               WORLD_SCALE_RANGE: [0.95, 1.05]
 
+
+
 MODEL:
     NAME: PVRCNN_SSL
 
@@ -159,7 +161,8 @@ MODEL:
     ROI_HEAD:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
-
+        ENABLE_EVAL: True
+        METRICS_PRED_TYPES: [roi_pl_gt] #pl_gt_metrics_after_filtering, pl_gt_metrics_before_filtering
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
@@ -185,6 +188,10 @@ MODEL:
             POOL_RADIUS: [0.8, 1.6]
             NSAMPLE: [16, 16]
             POOL_METHOD: max_pool
+
+        PROTOTYPE:
+            MOMENTUM : 0.9
+            START_ITER : 20
 
         TARGET_CONFIG:
             BOX_CODER: ResidualCoder
@@ -218,6 +225,7 @@ MODEL:
         OUTPUT_RAW_SCORE: False
 
         EVAL_METRIC: kitti
+        ENABLE_KITTI_EVAL: True
 
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False
@@ -234,7 +242,20 @@ MODEL:
     SEM_THRESH: [0.2, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
-
+    STORE_SCORES_IN_PKL: False
+    DYNAMIC_ULB_LOSS_WEIGHT:
+        ENABLE: False
+        START_WEIGHT: 1
+        END_WEIGHT: 2
+        START_EPOCH : 20
+        END_EPOCH: 40
+        ALPHA: 0.2
+        STEP_SIZE: 5
+    PROTO_INTER_LOSS:
+        ENABLE : False
+        WEIGHT : 1.0
+    PRETRAINED_MODEL:
+        ENABLE : False
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 1 #2
@@ -257,3 +278,4 @@ OPTIMIZATION:
     WARMUP_EPOCH: 1
 
     GRAD_NORM_CLIP: 10
+
