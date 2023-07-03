@@ -211,36 +211,57 @@ class PVRCNNHead(RoIHeadTemplate):
     #Compute current pooled_features. Set labeled on to get current labeled features, else off for unlabeled
     def get_features(self,batch_dict,labeled):
         current_features = {'Car': None, 'Ped' : None, 'Cyc' : None}
-        if batch_dict['module_type'] == "StrongAug":
+        
+        # get features for ROIs of unlabeled data (viewB)
+        if batch_dict['module_type'] == "StrongAug":    
             batch_dict = self._get_pooled_features(batch_dict)
-        feature_type = 'pooled_features_ulb'
-        for i in range(1, len(self.class_dict)+1):
-            cls_mask = batch_dict['roi_labels'][batch_dict['unlabeled_inds']] == i
+
+        for cls_idx, cls_name in enumerate(list(self.class_dict.values())):
+            # get features for GTs of labeled data (for prototypes)
             if labeled==True and batch_dict['module_type'] == "WeakAug":
                 feature_type ='pooled_features_lbl'
-                cls_mask = (batch_dict['gt_boxes'][batch_dict['labeled_inds'],:,-1] == i).squeeze(0)
-            current_features[self.class_dict[i]] = batch_dict[feature_type][:,cls_mask,...] # gts[cls],128,6,6,6
-            if current_features[self.class_dict[i]].numel() == 0:
-                current_features[self.class_dict[i]] = torch.zeros((1, 128, 6, 6, 6)).to(device=batch_dict['pooled_features'].device)
-        for i in range(1, len(self.class_dict)+1):
-            current_features[self.class_dict[i]] = current_features[self.class_dict[i]].view(current_features[self.class_dict[i]].shape[0],-1)
+                cls_mask = (batch_dict['gt_boxes'][batch_dict['labeled_inds'], :, -1] == (cls_idx+1)).flatten()
+            # get features for ROIs of unlabeled data (viewA)
+            else:
+                feature_type = 'pooled_features_ulb'
+                cls_mask = (batch_dict['roi_labels'][batch_dict['unlabeled_inds'], :] == (cls_idx+1)).flatten()
+
+            # B - batch size, N - No. of roi/gt
+            # C - No. of channels in features (128), G - grid size (6)
+            (B,N,C,G,G,G) = batch_dict[feature_type].size()         #shape - (B,N,128,6,6,6))
+            features = batch_dict[feature_type].view(B*N, C*G*G*G)  #shape - (B*N, 27648 (128*6*6*6))
+            
+            # Fetch classwise features 
+            current_features[cls_name] = features[cls_mask, ...] 
+
+            # TODO(shashank) : If ft. are aritficially filled like this way then 
+            # later there should be a check for such a scenario while computing cos_sim
+            if current_features[cls_name].numel() == 0: 
+                current_features[cls_name] = torch.zeros((1, C*G*G*G)).to(device=batch_dict['pooled_features'].device)
+        
         return current_features
 
     # Call current_features for labeled  and update labeled prototype 
     # NOTE : Prototype created using GT boxes and labels for labeled entries.
     def calc_prototype(self, batch_dict):
+        # get pooled features from viewA
         batch_dict['create_prototype'] = True
         batch_dict = self._get_pooled_features(batch_dict)  
         batch_dict.pop('create_prototype')
+        
+        # get features for GTs using above pooled features
         current_features = self.get_features(batch_dict, labeled=True)
-        for i in range(1, len(self.class_dict)+1):
-            current_features[self.class_dict[i]] =  (current_features[self.class_dict[i]].mean(dim=0)).detach().cpu()                                   # currentlabeled features
+        
+        # classwise mean of features across all GTs 
+        for cls_name in list(self.class_dict.values()):
+            current_features[cls_name] =  (current_features[cls_name].mean(dim=0)).detach().cpu()  
 
+        # update prototype with current labeled features using EMA
         if batch_dict['cur_iteration']< self.start_iter: 
             self.prototype = current_features
         else :
-            for i in range(1, len(self.class_dict)+1):
-                self.prototype[self.class_dict[i]] = self.momentum * self.prototype[self.class_dict[i]] + (1 - self.momentum) * current_features[self.class_dict[i]]        # update prototype with current labeled features
+            for cls_name in list(self.class_dict.values()):
+                self.prototype[cls_name] = self.momentum * self.prototype[cls_name] + (1 - self.momentum) * current_features[cls_name]        
         return self.prototype
 
     # Called when computing unlabeled_features for strong_aug. Pass through ROI_Grid_pool and return to get_features() 
