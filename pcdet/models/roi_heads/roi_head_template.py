@@ -469,8 +469,10 @@ class RoIHeadTemplate(nn.Module):
             repeated_prototype_weak = prototype.repeat(features_weak_ulb.shape[0], 1)
             repeated_prototype_strong = prototype.repeat(features_strong_ulb.shape[0], 1)
 
-            cos_weak_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_weak, features_weak_ulb).mean()
-            cos_strong_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_strong, features_strong_ulb).mean()
+            cos_weak_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_weak, features_weak_ulb).mean() #dim=1 default
+            cos_strong_ulb_lb[idx] = F.cosine_similarity(repeated_prototype_strong, features_strong_ulb).mean()  #dim=1 default
+            
+            # TODO : Verify performance of backprop's autograd when using F.cosine_similarity versus when computing it explicitly.
 
         tb_dict["cos_src_ulb_weak_Car"] = cos_weak_ulb_lb[0]
         tb_dict["cos_src_ulb_weak_Ped"] = cos_weak_ulb_lb[1]

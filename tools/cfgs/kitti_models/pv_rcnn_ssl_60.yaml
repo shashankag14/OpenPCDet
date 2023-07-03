@@ -193,6 +193,10 @@ MODEL:
             MOMENTUM : 0.9
             START_ITER : 20
 
+        PROTO_INTER_LOSS:
+            ENABLE : False
+            WEIGHT : 1.0
+
         TARGET_CONFIG:
             BOX_CODER: ResidualCoder
             ROI_PER_IMAGE: 128
@@ -251,9 +255,7 @@ MODEL:
         END_EPOCH: 40
         ALPHA: 0.2
         STEP_SIZE: 5
-    PROTO_INTER_LOSS:
-        ENABLE : False
-        WEIGHT : 1.0
+
     PRETRAINED_MODEL:
         ENABLE : False
 

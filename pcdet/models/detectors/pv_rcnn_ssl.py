@@ -82,12 +82,12 @@ class PVRCNN_SSL(Detector3DTemplate):
 
 
     def forward(self, batch_dict):
+        labeled_mask = batch_dict['labeled_mask'].view(-1)
+        labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
+        batch_dict['labeled_inds'] = labeled_inds
+        unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
+        batch_dict['unlabeled_inds'] = unlabeled_inds
         if self.training:
-            labeled_mask = batch_dict['labeled_mask'].view(-1)
-            labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
-            batch_dict['labeled_inds'] = labeled_inds
-            unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
-            batch_dict['unlabeled_inds'] = unlabeled_inds
             batch_dict_ema = {}
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
             keys = list(batch_dict.keys())
@@ -158,7 +158,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
-            if self.model_cfg.PROTO_INTER_LOSS.ENABLE: 
+            if self.model_cfg.ROI_HEAD.PROTO_INTER_LOSS.ENABLE: 
                 # with torch.no_grad():
                 '''
                 Enabling torch.no_grad sets all the requires_grad to be false
@@ -166,9 +166,11 @@ class PVRCNN_SSL(Detector3DTemplate):
  
                 
                 '''
+                batch_dict_viewA['unlabeled_inds'] = batch_dict_ema['unlabeled_inds']
+
                 for cur_module in self.pv_rcnn.module_list:                 # weak augmentation
                     batch_dict_viewA = cur_module(batch_dict_viewA) 
-
+                    
 
                 batch_dict_viewB = {}                                       #strong augmentation
                 batch_dict_viewB['module_type'] = "StrongAug"
@@ -219,7 +221,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             else:
                 loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
 
-            if self.model_cfg.PROTO_INTER_LOSS.ENABLE:
+            if self.model_cfg.ROI_HEAD.PROTO_INTER_LOSS.ENABLE:
                 loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box + inter_domain_loss
             else : 
                 loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
