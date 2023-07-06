@@ -1,6 +1,27 @@
 import mayavi.mlab as mlab
 import numpy as np
 import torch
+# # Adapted from : https://github.com/fnozarian/OpenPCDet/blob/3bf82657e59201971fcff828c7edcce5c300051c/pcdet/models/detectors/pv_rcnn_ssl.py
+# # imports mayavi only if the environment supports a display
+# if os.name == 'posix' and "DISPLAY" not in os.environ:
+#     headless_server = True
+#     vis_dir = cfg.ROOT_DIR / 'output' / 'vis'
+#     vis_dir.mkdir(parents=True, exist_ok=True)
+#     """ Following will create a virtual display, Install pyvirtualdisplay using <pip install pyvirtualdisplay> """
+#     from pyvirtualdisplay import Display
+
+#     try:
+#         display = Display(visible=0, size=(1920, 1080))
+#         display.start()
+#         import mayavi.mlab as mlab
+#         mlab.options.offscreen = True
+#     except: 
+#         pass
+
+# else:
+#     import mayavi.mlab as mlab
+#     headless_server = False
+
 
 box_colormap = [
     [1, 1, 1],
