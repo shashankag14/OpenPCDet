@@ -50,6 +50,7 @@ class PVRCNNHead(RoIHeadTemplate):
         self.prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.momentum = self.model_cfg.PROTOTYPE.MOMENTUM
         self.start_iter = self.model_cfg.PROTOTYPE.START_ITER
+        self.feature_points = {}
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -85,6 +86,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
+        batch_dict['create_prototype'] = True # REMOVE AFTERWARDS, ONLY FOR DEBUGGING
         rois = batch_dict['gt_boxes'] if 'create_prototype' in batch_dict else batch_dict['rois']
         point_coords = batch_dict['point_coords']
         point_features = batch_dict['point_features']
@@ -116,6 +118,26 @@ class PVRCNNHead(RoIHeadTemplate):
             -1, self.model_cfg.ROI_GRID_POOL.GRID_SIZE ** 3,
             pooled_features.shape[-1]
         )  # (BxN, 6x6x6, C)
+
+        # only for offline debugging purposes
+        if 'create_prototype' in batch_dict:
+            gt_boxes = batch_dict['gt_boxes'].view(-1, 8)
+            valid_gt_boxes_mask = torch.logical_not(torch.all(gt_boxes == 0, dim=-1))
+            valid_gt_boxes = gt_boxes[valid_gt_boxes_mask, ...]
+            
+            self.feature_points['local_roi_grid_points'] = local_roi_grid_points[valid_gt_boxes_mask, ...]
+            self.feature_points['pooled_features'] = pooled_features[valid_gt_boxes_mask, ...]
+            self.feature_points['valid_gt_boxes'] = valid_gt_boxes
+        else:
+            self.feature_points['local_roi_grid_points'] = local_roi_grid_points #(B*N, 216, 3)
+            self.feature_points['pooled_features'] = pooled_features
+        # Save the BEV features seperately, might be useful later
+        self.feature_points['spatial_features_2d'] = batch_dict['spatial_features_2d']
+
+        output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+        file_path = os.path.join(output_dir, 'features_points_new.pkl')
+        pickle.dump(self.feature_points, open(file_path, 'wb'))
+
         return pooled_features
 
     def get_global_grid_points_of_roi(self, rois, grid_size):
@@ -163,7 +185,7 @@ class PVRCNNHead(RoIHeadTemplate):
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1).\
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-        
+
         if self.training and self.model_cfg.PROTO_INTER_LOSS.ENABLE:
             
             batch_dict['pooled_features'] =  pooled_features.view(batch_dict['batch_size'],batch_dict['roi_labels'].shape[1],-1, grid_size, grid_size, grid_size)
@@ -229,7 +251,7 @@ class PVRCNNHead(RoIHeadTemplate):
             # B - batch size, N - No. of roi/gt
             # C - No. of channels in features (128), G - grid size (6)
             (B,N,C,G,G,G) = batch_dict[feature_type].size()         #shape - (B,N,128,6,6,6))
-            features = batch_dict[feature_type].view(B*N, C*G*G*G)  #shape - (B*N, 27648 (128*6*6*6))
+            features = batch_dict[feature_type].view(B*N, C*G*G*G)  #shape - (B*N, 27648 (128*6*6*6)) 10 x 27648 -> 1 x 27648
             
             # Fetch classwise features 
             current_features[cls_name] = features[cls_mask, ...] 
@@ -266,19 +288,20 @@ class PVRCNNHead(RoIHeadTemplate):
 
     # Called when computing unlabeled_features for strong_aug. Pass through ROI_Grid_pool and return to get_features() 
     def _get_pooled_features(self,batch_dict):
-
         pooled_features = self.roi_grid_pool(batch_dict) 
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
-        pooled_features = pooled_features.permute(0, 2, 1).\
-            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-    
+        pooled_features = pooled_features.permute(0, 2, 1).contiguous()\
+                            .view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
         
+        # TODO (shashank) : why unsqueeze the shapes of ft.?
         if 'create_prototype' in batch_dict:
-            batch_dict['pooled_features'] =  pooled_features.view(batch_dict['batch_size'],batch_dict['gt_boxes'].shape[1],-1, grid_size, grid_size, grid_size)
+            batch_dict['pooled_features'] =  pooled_features.view\
+                                (batch_dict['batch_size'],batch_dict['gt_boxes'].shape[1],-1, grid_size, grid_size, grid_size)
             batch_dict['pooled_features_lbl'] =  batch_dict['pooled_features'][batch_dict['labeled_inds']]
         else:
-            batch_dict['pooled_features'] =  pooled_features.view(batch_dict['batch_size'],batch_dict['roi_labels'].shape[1],-1, grid_size, grid_size, grid_size)
+            batch_dict['pooled_features'] =  pooled_features.view\
+                                (batch_dict['batch_size'],batch_dict['roi_labels'].shape[1],-1, grid_size, grid_size, grid_size)
             batch_dict['pooled_features_ulb'] =  batch_dict['pooled_features'][batch_dict['unlabeled_inds']]
 
         return batch_dict
