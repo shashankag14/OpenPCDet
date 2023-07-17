@@ -50,7 +50,7 @@ class PVRCNNHead(RoIHeadTemplate):
         self.prototype = {'Car': None, 'Ped' : None, 'Cyc' : None}
         self.momentum = self.model_cfg.PROTOTYPE.MOMENTUM
         self.start_iter = self.model_cfg.PROTOTYPE.START_ITER
-        self.feature_points = {}
+        self.prototype_info = {}
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -121,22 +121,37 @@ class PVRCNNHead(RoIHeadTemplate):
 
         # only for offline debugging purposes
         if 'create_prototype' in batch_dict:
+            # Remove the extra filled GTs i.e. bbox having all zeros across all dim
             gt_boxes = batch_dict['gt_boxes'].view(-1, 8)
-            valid_gt_boxes_mask = torch.logical_not(torch.all(gt_boxes == 0, dim=-1))
-            valid_gt_boxes = gt_boxes[valid_gt_boxes_mask, ...]
+            #valid_gt_boxes_mask = torch.logical_not(torch.all(gt_boxes == 0, dim=-1))
+            valid_gt_boxes = gt_boxes#[valid_gt_boxes_mask, ...]
+            self.prototype_info['valid_gt_boxes'] = valid_gt_boxes
             
-            self.feature_points['local_roi_grid_points'] = local_roi_grid_points[valid_gt_boxes_mask, ...]
-            self.feature_points['pooled_features'] = pooled_features[valid_gt_boxes_mask, ...]
-            self.feature_points['valid_gt_boxes'] = valid_gt_boxes
+            self.prototype_info['local_roi_grid_points'] = local_roi_grid_points[valid_gt_boxes_mask, ...]
+            self.prototype_info['pooled_features'] = pooled_features[valid_gt_boxes_mask, ...]
         else:
-            self.feature_points['local_roi_grid_points'] = local_roi_grid_points #(B*N, 216, 3)
-            self.feature_points['pooled_features'] = pooled_features
+            self.prototype_info['local_roi_grid_points'] = local_roi_grid_points #(B*N, 216, 3)
+            self.prototype_info['pooled_features'] = pooled_features
+        
         # Save the BEV features seperately, might be useful later
-        self.feature_points['spatial_features_2d'] = batch_dict['spatial_features_2d']
+        self.prototype_info['spatial_features_2d'] = batch_dict['spatial_features_2d']
+        
+        # Store frame ID
+        # note the gt_boxes of this frame if stored above could be more than the actual ones due to GT sampling
+        self.prototype_info['frame_id'] = batch_dict['frame_id']    
+        
+        # Store the raw points of point cloud for every batch/scene
+        # point_bs_cnt = batch_dict['points'][:, 0]
+        # point_xyz = batch_dict['points'][:, 1:4]
+        # prototye_info_points = []
+        # for bs_idx in range(batch_size):
+        #     bs_mask = (point_bs_cnt == bs_idx)
+        #     prototype_info_points.append(point_xyz[bs_mask])  
+        self.prototype_info['points'] = batch_dict['points'] # torch.cat(prototype_info_points)
 
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
-        file_path = os.path.join(output_dir, 'features_points_new.pkl')
-        pickle.dump(self.feature_points, open(file_path, 'wb'))
+        file_path = os.path.join(output_dir, 'prototype_info.pkl')
+        pickle.dump(self.prototype_info, open(file_path, 'wb'))
 
         return pooled_features
 
