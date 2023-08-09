@@ -1,3 +1,4 @@
+import os
 import copy
 import pickle
 from collections import defaultdict
@@ -9,6 +10,7 @@ from pcdet.datasets.augmentor.augmentor_utils import *
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti
 from ..dataset import DatasetTemplate
+from collections import Counter
 
 
 class KittiDatasetSSL(DatasetTemplate):
@@ -62,8 +64,16 @@ class KittiDatasetSSL(DatasetTemplate):
             self.kitti_infos = temp
             assert len(self.kitti_infos) == len(self.sample_id_list)
 
+        self.class_counter = Counter()
+        for info in self.kitti_infos:
+            for name in info['annos']['name']:
+                self.class_counter[name] += 1
+        print("Labeled instances before gt_sampling: ", self.class_counter)
+
         if self.logger is not None:
             self.logger.info('Total samples for KITTI dataset: %d' % (len(self.kitti_infos)))
+        
+        self.instance_idx_counter = {}
 
     def include_kitti_data(self, mode):
         if self.logger is not None:
@@ -431,6 +441,12 @@ class KittiDatasetSSL(DatasetTemplate):
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
+                elif key in ['instance_idx','instance_idx_ema']:
+                    max_ind = max([len(x) for x in val])
+                    batch_ind = np.zeros((batch_size, max_ind), dtype=np.int32)
+                    for k in range(batch_size):
+                        batch_ind[k, :val[k].__len__()] = val[k]
+                    ret[key] = batch_ind
                 else:
                     ret[key] = np.stack(val, axis=0)
             except:
@@ -466,10 +482,12 @@ class KittiDatasetSSL(DatasetTemplate):
             gt_names = annos['name']
             gt_boxes_camera = np.concatenate([loc, dims, rots[..., np.newaxis]], axis=1).astype(np.float32)
             gt_boxes_lidar = box_utils.boxes3d_kitti_camera_to_lidar(gt_boxes_camera, calib)
+            instance_index = np.asarray([int(sample_idx) * 100 + int(index) for index in annos['index']])
 
             input_dict.update({
                 'gt_names': gt_names,
-                'gt_boxes': gt_boxes_lidar
+                'gt_boxes': gt_boxes_lidar,
+                'instance_idx': instance_index,
             })
             road_plane = self.get_road_plane(sample_idx)
             if road_plane is not None:
@@ -529,6 +547,7 @@ class KittiDatasetSSL(DatasetTemplate):
         if data_dict.get('gt_boxes', None) is not None:
             selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
             data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
+            data_dict['instance_idx'] = data_dict['instance_idx'][selected]
             
             if self.training:
                 data_dict['gt_boxes_ema'] = data_dict['gt_boxes_ema'][selected]
@@ -544,6 +563,7 @@ class KittiDatasetSSL(DatasetTemplate):
         if self.training:
             points = data_dict['points'].copy()
             gt_boxes = data_dict['gt_boxes'].copy()
+            instance_idx = data_dict['instance_idx'].copy()
             # points_ema = data_dict['points_ema'].copy()
             data_dict['points'] = data_dict['points_ema']
             data_dict['gt_boxes'] = data_dict['gt_boxes_ema']
@@ -558,9 +578,11 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['voxels_ema'] = data_dict['voxels']
             data_dict['voxel_coords_ema'] = data_dict['voxel_coords']
             data_dict['voxel_num_points_ema'] = data_dict['voxel_num_points']
+            data_dict['instance_idx_ema'] = data_dict['instance_idx']
 
             data_dict['points'] = points
             data_dict['gt_boxes'] = gt_boxes
+            data_dict['instance_idx'] = instance_idx
             data_dict.pop('voxels', None)
             data_dict.pop('voxel_coords', None)
             data_dict.pop('voxel_num_points', None)
@@ -568,6 +590,8 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict = self.data_processor.forward(
                 data_dict=data_dict
             )
+            assert data_dict['instance_idx'].shape[0] == data_dict['gt_boxes'].shape[0],\
+                "gt_boxes and instance_idx do not match in the end of prepare data"
 
         '''if self.training:
             if no_db_sample:

@@ -39,12 +39,30 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'weights', 'class_labels', 'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
+        self.instance_idx_counter = {}
 
     def forward(self, batch_dict):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
             unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
+
+            # Store the frequency of occurences of each labeled instance
+            instance_idx = batch_dict['instance_idx'][labeled_inds].flatten()
+            gt_boxes = batch_dict['gt_boxes'][labeled_inds].view(-1, batch_dict['gt_boxes'].shape[-1])
+            valid_instance_idx_mask = ~(instance_idx == 0)
+            
+            for idx, instance in enumerate(list(instance_idx[valid_instance_idx_mask])):
+                instance = int(instance.item())
+                if instance in self.instance_idx_counter.keys():
+                    self.instance_idx_counter[instance]['Counter'] += 1
+                else:
+                    self.instance_idx_counter[instance] = {'Counter': 1, 'Class': int(gt_boxes[valid_instance_idx_mask][idx, -1].item())}
+            
+            output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+            file_path = os.path.join(output_dir, 'instance_idx.pkl')
+            pickle.dump(self.instance_idx_counter, open(file_path, 'wb'))
+
             batch_dict_ema = {}
             keys = list(batch_dict.keys())
             for k in keys:

@@ -32,6 +32,11 @@ class DataBaseSampler(object):
                 print(f"{str(db_info_path)} not found.")
                 return
 
+        for class_name in self.class_names:
+            for i,val in enumerate(self.db_infos[class_name]):
+                val['instance_idx'] = int(val['image_idx']) * 100 + int(val['gt_idx']) #NOTE: img_idx_gt_idx is unique identifier #Not filtered by difficulty
+                val['class_name'] = class_name #NOTE: for verification later
+
         for func_name, val in sampler_cfg.PREPARE.items():
             self.db_infos = getattr(self, func_name)(self.db_infos, val)
 
@@ -46,10 +51,12 @@ class DataBaseSampler(object):
             if class_name not in class_names:
                 continue
             self.sample_class_num[class_name] = sample_num
+            instance_idx = [val['instance_idx'] for val in self.db_infos[class_name]]
             self.sample_groups[class_name] = {
                 'sample_num': sample_num,
                 'pointer': len(self.db_infos[class_name]),
-                'indices': np.arange(len(self.db_infos[class_name]))
+                'indices': np.arange(len(self.db_infos[class_name])),
+                'instance_idx': np.asarray(instance_idx)
             }
 
     def __getstate__(self):
@@ -161,6 +168,8 @@ class DataBaseSampler(object):
         gt_boxes_mask = data_dict['gt_boxes_mask']
         gt_boxes = data_dict['gt_boxes'][gt_boxes_mask]
         gt_names = data_dict['gt_names'][gt_boxes_mask]
+        gt_instance_idx = data_dict['instance_idx'][gt_boxes_mask]
+        assert gt_boxes.shape[0] == gt_names.shape[0] == gt_instance_idx.shape[0], "gt_boxes, gt_names, gt_instance_idx should have same length"
         points = data_dict['points']
         if self.sampler_cfg.get('USE_ROAD_PLANE', False):
             sampled_gt_boxes, mv_height = self.put_boxes_on_road_planes(
@@ -195,6 +204,7 @@ class DataBaseSampler(object):
 
         obj_points = np.concatenate(obj_points_list, axis=0)
         sampled_gt_names = np.array([x['name'] for x in total_valid_sampled_dict])
+        sampled_instance_idx = np.array([x['instance_idx'] for x in total_valid_sampled_dict])
 
         large_sampled_gt_boxes = box_utils.enlarge_box3d(
             sampled_gt_boxes[:, 0:7], extra_width=self.sampler_cfg.REMOVE_EXTRA_WIDTH
@@ -203,9 +213,12 @@ class DataBaseSampler(object):
         points = np.concatenate([obj_points, points], axis=0)
         gt_names = np.concatenate([gt_names, sampled_gt_names], axis=0)
         gt_boxes = np.concatenate([gt_boxes, sampled_gt_boxes], axis=0)
+        gt_instance_idx = np.concatenate([gt_instance_idx, sampled_instance_idx], axis=0)
+        assert gt_names.shape[0] == gt_boxes.shape[0] == gt_instance_idx.shape[0], "gt_boxes, gt_names, gt_instance_idx should have same length"
         data_dict['gt_boxes'] = gt_boxes
         data_dict['gt_names'] = gt_names
         data_dict['points'] = points
+        data_dict['instance_idx'] = gt_instance_idx
         return data_dict
 
     def __call__(self, data_dict, no_db_sample=False):
